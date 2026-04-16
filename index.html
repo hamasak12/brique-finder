@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlipFinder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --surface2: #22263a;
+      --border:   #2e3248;
+      --text:     #e8eaf6;
+      --muted:    #7c84b0;
+      --green:    #22c55e;
+      --green-bg: rgba(34,197,94,.12);
+      --yellow:   #f59e0b;
+      --yel-bg:   rgba(245,158,11,.12);
+      --red:      #ef4444;
+      --red-bg:   rgba(239,68,68,.10);
+      --blue:     #6366f1;
+      --blue-bg:  rgba(99,102,241,.15);
+      --radius:   12px;
+    }
+    .light {
+      --bg:#f3f4f8;--surface:#fff;--surface2:#f0f1f7;
+      --border:#dde0f0;--text:#1a1d27;--muted:#6b7394;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px}
+
+    /* ── Header ── */
+    .header{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+    .logo{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800;letter-spacing:-.5px}
+    .logo-icon{width:34px;height:34px;background:var(--blue);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px}
+    .header-right{display:flex;align-items:center;gap:12px}
+    .server-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block;margin-right:5px;transition:background .3s}
+    .server-dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+    .server-dot.err{background:var(--red)}
+    .server-label{font-size:12px;color:var(--muted)}
+    .theme-btn{background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:15px;padding:5px 9px}
+
+    /* ── Tabs ── */
+    .tabs{display:flex;gap:4px;background:var(--surface2);border-radius:10px;padding:4px;margin-bottom:24px}
+    .tab{flex:1;background:none;border:none;border-radius:7px;color:var(--muted);cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;padding:8px 0;transition:all .2s}
+    .tab.active{background:var(--surface);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.3)}
+
+    /* ── Container ── */
+    .container{max-width:1000px;margin:0 auto;padding:28px 20px}
+
+    /* ── Banners ── */
+    .banner{border-radius:var(--radius);padding:14px 18px;margin-bottom:18px;font-size:13px;display:none}
+    .banner.show{display:block}
+    .banner.offline{background:var(--red-bg);border:1px solid var(--red)}
+    .banner.setup{background:var(--yel-bg);border:1px solid var(--yellow)}
+    .banner.setup strong{color:var(--yellow)}
+    .banner code{background:var(--surface2);border-radius:4px;font-family:monospace;font-size:12px;padding:2px 6px}
+
+    /* ── Cards ── */
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:20px;box-shadow:0 2px 12px rgba(0,0,0,.3)}
+    .card h2{font-size:16px;font-weight:700;margin-bottom:4px}
+    .card p{color:var(--muted);font-size:13px;margin-bottom:18px}
+
+    /* ── Search row ── */
+    .search-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end}
+    .field label{display:block;font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+    .field input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:14px;padding:10px 14px;outline:none;transition:border-color .2s}
+    .field input:focus{border-color:var(--blue)}
+    .field input::placeholder{color:var(--muted)}
+
+    /* ── Buttons ── */
+    .btn{border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;padding:10px 20px;transition:opacity .2s,transform .1s}
+    .btn:active{transform:scale(.97)}
+    .btn:disabled{opacity:.45;cursor:not-allowed}
+    .btn-primary{background:var(--blue);color:#fff}
+    .btn-secondary{background:var(--surface2);border:1px solid var(--border);color:var(--text)}
+    .btn-green{background:var(--green);color:#fff}
+    .btn-red{background:var(--red);color:#fff}
+    .btn-sm{padding:6px 12px;font-size:12px}
+
+    /* ── Feed keywords ── */
+    .kw-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;min-height:28px}
+    .kw-chip{background:var(--blue-bg);border:1px solid var(--blue);border-radius:20px;color:var(--blue);display:flex;align-items:center;font-size:12px;font-weight:600;gap:6px;padding:4px 12px}
+    .kw-chip button{background:none;border:none;color:var(--blue);cursor:pointer;font-size:14px;line-height:1;padding:0}
+    .kw-add-row{display:flex;gap:8px;align-items:center}
+    .kw-add-row input{flex:1}
+
+    /* ── Feed controls ── */
+    .feed-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+    .feed-timer{font-size:12px;color:var(--muted)}
+    .feed-timer span{color:var(--text);font-weight:700}
+
+    /* ── Loading ── */
+    .loading{display:none;align-items:center;gap:12px;padding:28px;justify-content:center;color:var(--muted)}
+    .loading.show{display:flex}
+    .spinner{width:22px;height:22px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* ── Error ── */
+    .error-msg{background:var(--red-bg);border:1px solid var(--red);border-radius:var(--radius);color:var(--red);padding:12px 16px;font-size:13px;margin-bottom:16px;display:none}
+    .error-msg.show{display:block}
+
+    /* ── Section header ── */
+    .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+    .section-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--muted)}
+    .badge{background:var(--blue-bg);border-radius:20px;color:var(--blue);font-size:12px;font-weight:700;padding:3px 10px}
+
+    /* ── History row ── */
+    .history-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+    .history-row select{background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:13px;padding:8px 12px;outline:none;flex:1;min-width:180px;cursor:pointer}
+
+    /* ── Table ── */
+    .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.3)}
+    table{border-collapse:collapse;width:100%}
+    thead tr{background:var(--surface2);border-bottom:1px solid var(--border)}
+    th{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.8px;padding:11px 14px;text-align:left;text-transform:uppercase;white-space:nowrap}
+    tbody tr{border-bottom:1px solid var(--border);transition:background .15s}
+    tbody tr:last-child{border-bottom:none}
+    tbody tr:hover{background:var(--surface2)}
+    td{font-size:13px;padding:12px 14px;vertical-align:middle}
+
+    /* ── Item cell ── */
+    .item-cell{display:flex;align-items:center;gap:10px}
+    .item-thumb{width:46px;height:46px;border-radius:8px;object-fit:cover;background:var(--surface2);flex-shrink:0;border:1px solid var(--border)}
+    .thumb-ph{width:46px;height:46px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+    .item-name a{color:var(--text);text-decoration:none;font-weight:600;line-height:1.3}
+    .item-name a:hover{color:var(--blue)}
+    .item-sub{color:var(--muted);font-size:11px;margin-top:2px}
+
+    /* ── Score badge ── */
+    .score-badge{border-radius:6px;font-size:12px;font-weight:800;padding:4px 9px;display:inline-block;white-space:nowrap}
+    .score-hot   {background:var(--green-bg);color:var(--green)}
+    .score-good  {background:var(--yel-bg);  color:var(--yellow)}
+    .score-ok    {background:var(--surface2); color:var(--muted)}
+
+    /* ── Like/Dislike buttons ── */
+    .vote-btns{display:flex;gap:6px;align-items:center}
+    .vote-btn{background:var(--surface2);border:1px solid var(--border);border-radius:7px;cursor:pointer;font-size:15px;padding:5px 8px;transition:all .2s;line-height:1}
+    .vote-btn:hover{transform:scale(1.15)}
+    .vote-btn.liked   {background:var(--green-bg);border-color:var(--green)}
+    .vote-btn.disliked{background:var(--red-bg);  border-color:var(--red)}
+
+    /* ── Empty state ── */
+    .empty{padding:44px 20px;text-align:center;color:var(--muted)}
+    .empty .emoji{font-size:34px;display:block;margin-bottom:10px}
+    .empty p{font-size:13px}
+
+    /* ── Responsive ── */
+    @media(max-width:680px){
+      .search-row{grid-template-columns:1fr}
+      .btn{width:100%}
+      th:nth-child(4),td:nth-child(4),th:nth-child(5),td:nth-child(5){display:none}
+    }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <div class="logo">
+    <div class="logo-icon">🔁</div>
+    FlipFinder
+  </div>
+  <div class="header-right">
+    <span>
+      <span class="server-dot" id="serverDot"></span>
+      <span class="server-label" id="serverLabel">checking...</span>
+    </span>
+    <button class="theme-btn" onclick="toggleTheme()">🌙</button>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Banners -->
+  <div class="banner offline" id="offlineBanner">
+    <strong>Server offline.</strong> Run: <code>cd g:\FlipFinder</code> then <code>python server.py</code>
+  </div>
+  <div class="banner setup" id="setupBanner">
+    <strong>Facebook login required.</strong> Run: <code>python setup_fb.py</code> — log in, press Enter, restart server.
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" id="tabSearch" onclick="switchTab('search')">Search</button>
+    <button class="tab"        id="tabFeed"   onclick="switchTab('feed')">Live Feed</button>
+  </div>
+
+  <!-- ══════════ SEARCH TAB ══════════ -->
+  <div id="panelSearch">
+    <div class="card">
+      <h2>Find Profitable Flips</h2>
+      <p>Search Facebook Marketplace in Curitiba, PR. Like or dislike results to train the score algorithm.</p>
+      <div class="search-row">
+        <div class="field">
+          <label>Item to search &nbsp;·&nbsp; <span style="text-transform:none;font-weight:400;letter-spacing:0">📍 Curitiba, Paraná</span></label>
+          <input type="text" id="inputQuery" placeholder="e.g. iphone 12, ps5, macbook" />
+        </div>
+        <button class="btn btn-primary" id="btnSearch" onclick="runSearch()" style="height:40px">Search</button>
+      </div>
+    </div>
+
+    <div class="history-row">
+      <select id="historySelect"><option value="">-- Load a past search --</option></select>
+      <button class="btn btn-secondary btn-sm" onclick="loadHistory()">Load</button>
+      <button class="btn btn-sm" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff" onclick="loadTopPicks()">Top Picks</button>
+    </div>
+
+    <div class="error-msg" id="errorMsg"></div>
+    <div class="loading" id="loading"><div class="spinner"></div><span id="loadingText">Scanning Facebook Marketplace...</span></div>
+
+    <div id="resultsSection" style="display:none">
+      <div class="section-header">
+        <span class="section-title" id="resultsTitle">Results</span>
+        <span class="badge" id="resultsBadge"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Item</th>
+            <th>Price</th>
+            <th>Score</th>
+            <th>Seller</th>
+            <th>Location</th>
+            <th>Vote</th>
+          </tr></thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ FEED TAB ══════════ -->
+  <div id="panelFeed" style="display:none">
+    <div class="card">
+      <h2>Live Feed</h2>
+      <p>Add keywords to monitor. FlipFinder will scan them automatically and surface the best-scored offers.</p>
+
+      <div class="kw-list" id="kwList"></div>
+
+      <div class="kw-add-row">
+        <div class="field" style="flex:1;margin:0">
+          <input type="text" id="kwInput" placeholder="Add keyword (e.g. ps5, macbook air)" />
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="addKeyword()">Add</button>
+      </div>
+    </div>
+
+    <div class="feed-controls">
+      <button class="btn btn-green" id="btnFeedStart" onclick="startFeed()">Start Auto-Scan</button>
+      <button class="btn btn-secondary" id="btnFeedStop" onclick="stopFeed()" style="display:none">Stop</button>
+      <span class="feed-timer" id="feedTimer" style="display:none">Next scan in <span id="feedCountdown">—</span></span>
+    </div>
+
+    <div class="error-msg" id="feedError"></div>
+    <div class="loading" id="feedLoading"><div class="spinner"></div><span>Scanning all keywords...</span></div>
+
+    <div id="feedSection" style="display:none">
+      <div class="section-header">
+        <span class="section-title" id="feedBodyTitle">Feed Results</span>
+        <span class="badge" id="feedBadge"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Item</th>
+            <th>Price</th>
+            <th>Score</th>
+            <th>Keyword</th>
+            <th>Location</th>
+            <th>Vote</th>
+          </tr></thead>
+          <tbody id="feedBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+const API = "http://localhost:5001";
+
+// ── Votes store (in-memory for UI state) ──────────────────────────────────────
+const votes = {};        // listing_id -> 1 or -1
+const listingData = {};  // listing_id -> { name, price }
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function toggleTheme() {
+  const light = document.body.classList.toggle("light");
+  localStorage.setItem("ff_theme", light ? "light" : "dark");
+  document.querySelector(".theme-btn").textContent = light ? "🌙" : "☀️";
+}
+if (localStorage.getItem("ff_theme") === "light") {
+  document.body.classList.add("light");
+  document.querySelector(".theme-btn").textContent = "🌙";
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.getElementById("panelSearch").style.display = tab === "search" ? "" : "none";
+  document.getElementById("panelFeed").style.display   = tab === "feed"   ? "" : "none";
+  document.getElementById("tabSearch").classList.toggle("active", tab === "search");
+  document.getElementById("tabFeed").classList.toggle("active",   tab === "feed");
+  if (tab === "feed") loadKeywords();
+}
+
+// ── Server check ──────────────────────────────────────────────────────────────
+async function checkServer() {
+  const dot   = document.getElementById("serverDot");
+  const label = document.getElementById("serverLabel");
+  try {
+    const r = await fetch(`${API}/api/ping`, { signal: AbortSignal.timeout(3000) });
+    if (r.ok) {
+      dot.className     = "server-dot ok";
+      label.textContent = "server running";
+      document.getElementById("offlineBanner").classList.remove("show");
+      const sr = await fetch(`${API}/api/status`);
+      if (sr.ok) {
+        const s = await sr.json();
+        document.getElementById("setupBanner").style.display = s.fb_auth ? "none" : "block";
+      }
+      return true;
+    }
+  } catch {}
+  dot.className     = "server-dot err";
+  label.textContent = "server offline";
+  document.getElementById("offlineBanner").classList.add("show");
+  return false;
+}
+
+// ── History dropdown ──────────────────────────────────────────────────────────
+async function loadHistoryDropdown() {
+  try {
+    const r = await fetch(`${API}/api/history`);
+    const d = await r.json();
+    const sel = document.getElementById("historySelect");
+    sel.innerHTML = '<option value="">-- Load a past search --</option>';
+    (d.searches || []).forEach(s => {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = `${s.query}  (${s.listing_count} · ${new Date(s.searched_at).toLocaleDateString()})`;
+      sel.appendChild(o);
+    });
+  } catch {}
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+async function runSearch() {
+  const query = document.getElementById("inputQuery").value.trim();
+  if (!query) { showError("Enter a keyword."); return; }
+  if (!await checkServer()) return;
+  setLoading(true, "Scanning Facebook Marketplace...");
+  hideError(); hideResults();
+  try {
+    const r = await fetch(`${API}/api/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      if (d.setup_required) document.getElementById("setupBanner").style.display = "block";
+      showError(d.error || "Search failed.");
+      return;
+    }
+    const subtitle = `"${query}"` + (d.avg_price ? ` · avg R$${fmt(d.avg_price)}` : "");
+    renderResults(d.listings || [], subtitle, d.count, "resultsBody", "resultsTitle", "resultsBadge", "resultsSection");
+    loadHistoryDropdown();
+  } catch { showError("Could not connect to server."); }
+  finally { setLoading(false); }
+}
+
+async function loadHistory() {
+  const id = document.getElementById("historySelect").value;
+  if (!id) return;
+  setLoading(true, "Loading past search...");
+  hideError(); hideResults();
+  try {
+    const r = await fetch(`${API}/api/search/${id}`);
+    const d = await r.json();
+    renderResults(d.listings || [], "Past search", (d.listings||[]).length, "resultsBody", "resultsTitle", "resultsBadge", "resultsSection");
+  } catch { showError("Failed to load."); }
+  finally { setLoading(false); }
+}
+
+async function loadTopPicks() {
+  setLoading(true, "Loading top picks...");
+  hideError(); hideResults();
+  try {
+    const r = await fetch(`${API}/api/top-picks`);
+    const d = await r.json();
+    renderResults(d.listings || [], "Top Picks", (d.listings||[]).length, "resultsBody", "resultsTitle", "resultsBadge", "resultsSection");
+  } catch { showError("No data yet — run some searches first."); }
+  finally { setLoading(false); }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function renderResults(listings, title, count, bodyId, titleId, badgeId, sectionId) {
+  const section = document.getElementById(sectionId);
+  const tbody   = document.getElementById(bodyId);
+  document.getElementById(titleId).textContent  = title;
+  document.getElementById(badgeId).textContent  = count === 0 ? "No results" : `${count} listing${count !== 1 ? "s" : ""}`;
+  section.style.display = "block";
+
+  if (!listings.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><span class="emoji">🔍</span><p>No listings found. Try a different keyword.</p></div></td></tr>`;
+    return;
+  }
+
+  listings.forEach(l => { listingData[l.id] = { name: l.name, price: l.price || l.current_price || 0 }; });
+
+  tbody.innerHTML = listings.map(l => {
+    const score     = l.score ?? null;
+    const scoreCls  = score === null ? "score-ok" : score >= 55 ? "score-hot" : score >= 30 ? "score-good" : "score-ok";
+    const scoreTxt  = score !== null ? score.toFixed(0) : "—";
+    const photo     = l.photo_url || "";
+    const thumb     = photo
+      ? `<img src="${esc(photo)}" class="item-thumb" alt="" loading="lazy" onerror="this.style.display='none';this.nextSibling.style.display='flex'">`
+      : "";
+    const ph        = `<div class="thumb-ph" style="${photo ? "display:none" : ""}">📦</div>`;
+    const name      = esc(l.name || "Unknown");
+    const url       = esc(l.item_url || "#");
+    const price     = l.price || l.current_price || 0;
+    const seller    = esc(l.seller_name || "—");
+    const loc       = esc(l.seller_location || "—");
+    const kw        = l.query ? `<span style="color:var(--blue);font-size:11px">${esc(l.query)}</span>` : seller;
+    const showKw    = bodyId === "feedBody";
+    const myVote    = votes[l.id] || 0;
+
+    return `<tr id="row-${l.id}">
+      <td><div class="item-cell">
+        ${thumb}${ph}
+        <div>
+          <div class="item-name"><a href="${url}" target="_blank" rel="noopener">${name}</a></div>
+          <div class="item-sub">${esc(l.seller_location || "")}</div>
+        </div>
+      </div></td>
+      <td style="white-space:nowrap;font-weight:700">R$&nbsp;${fmt(price)}</td>
+      <td><span class="score-badge ${scoreCls}">${scoreTxt}</span></td>
+      <td style="font-size:12px;color:var(--muted)">${showKw ? kw : seller}</td>
+      <td style="font-size:12px;color:var(--muted)">${loc}</td>
+      <td>
+        <div class="vote-btns">
+          <button class="vote-btn ${myVote===1?'liked':''}" onclick="vote('${esc(l.id)}',1)" title="Good deal">👍</button>
+          <button class="vote-btn ${myVote===-1?'disliked':''}" onclick="vote('${esc(l.id)}',-1)" title="Bad deal">👎</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+// ── Vote ──────────────────────────────────────────────────────────────────────
+async function vote(listingId, v) {
+  const info = listingData[listingId] || {};
+  // Toggle off if clicking same vote
+  const current = votes[listingId] || 0;
+  const newVote = current === v ? 0 : v;
+  votes[listingId] = newVote;
+
+  // Update button UI immediately
+  const row = document.getElementById(`row-${listingId}`);
+  if (row) {
+    const [likeBtn, dislikeBtn] = row.querySelectorAll(".vote-btn");
+    likeBtn.classList.toggle("liked",       newVote === 1);
+    dislikeBtn.classList.toggle("disliked", newVote === -1);
+  }
+
+  if (newVote !== 0) {
+    try {
+      await fetch(`${API}/api/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ listing_id: listingId, listing_name: info.name, listing_price: info.price, vote: newVote }),
+      });
+    } catch {}
+  }
+}
+
+// ── Live Feed ─────────────────────────────────────────────────────────────────
+let feedInterval  = null;
+let feedCountdownInterval = null;
+const FEED_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
+
+async function loadKeywords() {
+  try {
+    const r = await fetch(`${API}/api/feed/keywords`);
+    const d = await r.json();
+    const list = document.getElementById("kwList");
+    list.innerHTML = (d.keywords || []).map(k =>
+      `<div class="kw-chip">${esc(k.keyword)}<button onclick="removeKeyword(${k.id})" title="Remove">×</button></div>`
+    ).join("") || `<span style="color:var(--muted);font-size:12px">No keywords yet — add some below</span>`;
+  } catch {}
+}
+
+async function addKeyword() {
+  const input = document.getElementById("kwInput");
+  const kw = input.value.trim();
+  if (!kw) return;
+  try {
+    await fetch(`${API}/api/feed/keywords`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keyword: kw }),
+    });
+    input.value = "";
+    loadKeywords();
+  } catch {}
+}
+
+async function removeKeyword(id) {
+  try {
+    await fetch(`${API}/api/feed/keywords/${id}`, { method: "DELETE" });
+    loadKeywords();
+  } catch {}
+}
+
+async function scanFeed() {
+  document.getElementById("feedLoading").classList.add("show");
+  document.getElementById("feedError").classList.remove("show");
+
+  try {
+    const r = await fetch(`${API}/api/feed`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) {
+      document.getElementById("feedError").textContent = d.error || "Feed scan failed.";
+      document.getElementById("feedError").classList.add("show");
+      document.getElementById("feedLoading").classList.remove("show");
+      return;
+    }
+    renderResults(d.listings || [], "Feed Results", (d.listings||[]).length, "feedBody", "feedBodyTitle", "feedBadge", "feedSection");
+    document.getElementById("feedSection").querySelector(".section-title").textContent =
+      `Feed · scanned ${d.keywords_scanned?.join(", ")}`;
+  } catch (e) {
+    document.getElementById("feedError").textContent = "Could not connect to server.";
+    document.getElementById("feedError").classList.add("show");
+  } finally {
+    document.getElementById("feedLoading").classList.remove("show");
+  }
+}
+
+function startFeed() {
+  document.getElementById("btnFeedStart").style.display = "none";
+  document.getElementById("btnFeedStop").style.display  = "";
+  document.getElementById("feedTimer").style.display    = "";
+
+  scanFeed();  // immediate first scan
+  feedInterval = setInterval(scanFeed, FEED_INTERVAL_MS);
+
+  let remaining = FEED_INTERVAL_MS / 1000;
+  feedCountdownInterval = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) remaining = FEED_INTERVAL_MS / 1000;
+    const m = Math.floor(remaining / 60);
+    const s = String(remaining % 60).padStart(2, "0");
+    document.getElementById("feedCountdown").textContent = `${m}:${s}`;
+  }, 1000);
+}
+
+function stopFeed() {
+  clearInterval(feedInterval);
+  clearInterval(feedCountdownInterval);
+  feedInterval = null;
+  document.getElementById("btnFeedStart").style.display = "";
+  document.getElementById("btnFeedStop").style.display  = "none";
+  document.getElementById("feedTimer").style.display    = "none";
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmt(n) {
+  if (n == null) return "—";
+  return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+function setLoading(on, text) {
+  document.getElementById("loading").classList.toggle("show", on);
+  if (text) document.getElementById("loadingText").textContent = text;
+  document.getElementById("btnSearch").disabled = on;
+}
+function showError(msg) {
+  const el = document.getElementById("errorMsg");
+  el.textContent = msg; el.classList.add("show");
+}
+function hideError()   { document.getElementById("errorMsg").classList.remove("show"); }
+function hideResults() { document.getElementById("resultsSection").style.display = "none"; }
+
+document.getElementById("inputQuery").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
+document.getElementById("kwInput").addEventListener("keydown", e => { if (e.key === "Enter") addKeyword(); });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+checkServer().then(ok => { if (ok) loadHistoryDropdown(); });
+setInterval(checkServer, 15000);
+</script>
+</body>
+</html>

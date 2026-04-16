@@ -1,0 +1,8 @@
+auth_state.json
+fb_marketplace.db
+debug.json
+debug_response.json
+__pycache__/
+*.pyc
+*.pyo
+.env
