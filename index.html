@@ -42,6 +42,16 @@
     .server-label{font-size:12px;color:var(--muted)}
     .theme-btn{background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:15px;padding:5px 9px}
 
+    /* ── Server config modal ── */
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:none;align-items:center;justify-content:center}
+    .modal-backdrop.show{display:flex}
+    .modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;width:100%;max-width:420px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+    .modal h3{font-size:16px;font-weight:700;margin-bottom:6px}
+    .modal p{color:var(--muted);font-size:13px;margin-bottom:18px;line-height:1.5}
+    .modal input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:monospace;font-size:13px;padding:10px 14px;outline:none;margin-bottom:14px;transition:border-color .2s}
+    .modal input:focus{border-color:var(--blue)}
+    .modal-footer{display:flex;gap:8px;justify-content:flex-end}
+
     /* ── Tabs ── */
     .tabs{display:flex;gap:4px;background:var(--surface2);border-radius:10px;padding:4px;margin-bottom:24px}
     .tab{flex:1;background:none;border:none;border-radius:7px;color:var(--muted);cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;padding:8px 0;transition:all .2s}
@@ -163,13 +173,29 @@
     FlipFinder
   </div>
   <div class="header-right">
-    <span>
+    <span style="cursor:pointer" onclick="openServerModal()" title="Configure server URL">
       <span class="server-dot" id="serverDot"></span>
       <span class="server-label" id="serverLabel">checking...</span>
     </span>
+    <button class="theme-btn" onclick="openServerModal()" title="Server settings">⚙️</button>
     <button class="theme-btn" onclick="toggleTheme()">🌙</button>
   </div>
 </header>
+
+<!-- Server config modal -->
+<div class="modal-backdrop" id="serverModal">
+  <div class="modal">
+    <h3>⚙️ Server URL</h3>
+    <p>Enter the address of your local Flask server.<br>
+       Default: <code style="background:var(--surface2);border-radius:4px;padding:2px 6px;font-size:12px">http://localhost:5001</code><br><br>
+       Using ngrok? Paste your ngrok URL here.</p>
+    <input type="text" id="serverUrlInput" placeholder="http://localhost:5001" />
+    <div class="modal-footer">
+      <button class="btn btn-secondary btn-sm" onclick="closeServerModal()">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveServerUrl()">Save &amp; Connect</button>
+    </div>
+  </div>
+</div>
 
 <div class="container">
 
@@ -280,7 +306,27 @@
 </div><!-- /container -->
 
 <script>
-const API = "http://localhost:5001";
+let API = localStorage.getItem("ff_server_url") || "http://localhost:5001";
+
+function openServerModal() {
+  document.getElementById("serverUrlInput").value = API;
+  document.getElementById("serverModal").classList.add("show");
+}
+function closeServerModal() {
+  document.getElementById("serverModal").classList.remove("show");
+}
+function saveServerUrl() {
+  const val = document.getElementById("serverUrlInput").value.trim().replace(/\/$/, "");
+  if (val) {
+    API = val;
+    localStorage.setItem("ff_server_url", API);
+  }
+  closeServerModal();
+  checkServer();
+}
+document.getElementById("serverModal").addEventListener("click", e => {
+  if (e.target === document.getElementById("serverModal")) closeServerModal();
+});
 
 // ── Votes store (in-memory for UI state) ──────────────────────────────────────
 const votes = {};        // listing_id -> 1 or -1
