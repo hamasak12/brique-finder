@@ -170,7 +170,7 @@
     @media(max-width:680px){
       .search-row{grid-template-columns:1fr}
       .btn{width:100%}
-      th:nth-child(4),td:nth-child(4),th:nth-child(5),td:nth-child(5){display:none}
+      th:nth-child(5),td:nth-child(5),th:nth-child(6),td:nth-child(6){display:none}
     }
   </style>
 </head>
@@ -299,9 +299,9 @@
           <thead><tr>
             <th>Item</th>
             <th>Price</th>
+            <th>Profit est.</th>
             <th>Score</th>
             <th>Seller</th>
-            <th>Location</th>
             <th>Vote</th>
           </tr></thead>
           <tbody id="resultsBody"></tbody>
@@ -345,9 +345,9 @@
           <thead><tr>
             <th>Item</th>
             <th>Price</th>
+            <th>Profit est.</th>
             <th>Score</th>
             <th>Keyword</th>
-            <th>Location</th>
             <th>Vote</th>
           </tr></thead>
           <tbody id="feedBody"></tbody>
@@ -674,6 +674,18 @@ function renderResults(listings, title, count, bodyId, titleId, badgeId, section
     const showKw    = bodyId === "feedBody";
     const myVote    = votes[l.id] || 0;
 
+    const avg       = l.avg_price || 0;
+    const profit    = avg > 0 ? avg - price : null;
+    const margin    = profit !== null && avg > 0 ? (profit / avg * 100) : null;
+    let profitCell;
+    if (profit === null || profit <= 0) {
+      profitCell = `<span style="color:var(--muted);font-size:12px">—</span>`;
+    } else {
+      const profitCls = margin >= 40 ? "color:var(--green)" : margin >= 20 ? "color:var(--yellow)" : "color:var(--muted)";
+      profitCell = `<span style="font-weight:700;${profitCls}">+R$&nbsp;${fmt(profit)}</span>
+        <div style="font-size:11px;color:var(--muted)">${margin.toFixed(0)}% margin</div>`;
+    }
+
     return `<tr id="row-${l.id}">
       <td><div class="item-cell">
         ${thumb}${ph}
@@ -683,9 +695,9 @@ function renderResults(listings, title, count, bodyId, titleId, badgeId, section
         </div>
       </div></td>
       <td style="white-space:nowrap;font-weight:700">R$&nbsp;${fmt(price)}</td>
+      <td>${profitCell}</td>
       <td><span class="score-badge ${scoreCls}">${scoreTxt}</span></td>
       <td style="font-size:12px;color:var(--muted)">${showKw ? kw : seller}</td>
-      <td style="font-size:12px;color:var(--muted)">${loc}</td>
       <td>
         <div class="vote-btns">
           <button class="vote-btn ${myVote===1?'liked':''}" onclick="vote('${esc(l.id)}',1)" title="Good deal">👍</button>
