@@ -12,6 +12,8 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
+import sys
 import threading
 from datetime import datetime, timezone
 from statistics import mean, stdev
@@ -30,6 +32,7 @@ AUTH_STATE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_
 ADMIN_PASSWORD   = os.environ.get("FF_ADMIN_PASSWORD", "admin")
 WHATSAPP_GROUP   = os.environ.get("FF_WHATSAPP_GROUP", "")
 WA_AUTH          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_auth.json")
+WA_SENDER        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_wa_sender.py")
 
 
 # ── Database ───────────────────────────────────────────────────────────────────
@@ -260,55 +263,8 @@ def dynamic_gem_threshold() -> float:
 _wa_status: dict = {"state": "idle", "message": ""}
 
 
-def _send_whatsapp(msg: str) -> None:
-    """Open WhatsApp Web and send a message to WHATSAPP_GROUP. Raises on failure."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(storage_state=WA_AUTH)
-        page    = context.new_page()
-
-        page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
-
-        # Wait until chats are loaded (session valid check)
-        try:
-            page.wait_for_selector('[aria-label="Search input textbox"]', timeout=25_000)
-        except Exception:
-            browser.close()
-            raise RuntimeError("WhatsApp session expired — run: python setup_whatsapp.py")
-
-        # Search for the group
-        page.click('[aria-label="Search input textbox"]')
-        page.wait_for_timeout(400)
-        page.keyboard.type(WHATSAPP_GROUP)
-        page.wait_for_timeout(2000)
-
-        # Click matching chat/group
-        result = page.locator(f'span[title="{WHATSAPP_GROUP}"]').first
-        try:
-            result.wait_for(timeout=5000)
-        except Exception:
-            browser.close()
-            raise RuntimeError(f'Group "{WHATSAPP_GROUP}" not found — check FF_WHATSAPP_GROUP name')
-        result.click()
-        page.wait_for_timeout(1000)
-
-        # Type and send
-        try:
-            msg_box = page.locator('[aria-label="Type a message"]')
-            msg_box.wait_for(timeout=5000)
-        except Exception:
-            browser.close()
-            raise RuntimeError("Could not find message input box")
-
-        msg_box.click()
-        page.keyboard.type(msg)
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(2000)
-        browser.close()
-
-
 def notify_gem(listing: dict):
-    """Send a WhatsApp alert for a gem listing. Skips duplicates."""
+    """Send a WhatsApp alert for a gem listing via subprocess. Skips duplicates."""
     global _wa_status
 
     if not WHATSAPP_GROUP or not os.path.exists(WA_AUTH):
@@ -333,18 +289,29 @@ def notify_gem(listing: dict):
 
     _wa_status = {"state": "sending", "message": ""}
     try:
-        _send_whatsapp(msg)
-        now = datetime.now(timezone.utc).isoformat()
-        with db_connect() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO notifications (listing_id, sent_at) VALUES (?,?)",
-                (listing["id"], now)
-            )
-        _wa_status = {"state": "ok", "message": "Sent!"}
-        print(f"[WhatsApp] gem sent: {listing['name']!r}  score={listing['score']}")
+        result = subprocess.run(
+            [sys.executable, WA_SENDER, WHATSAPP_GROUP, msg],
+            capture_output=True, text=True, timeout=90
+        )
+        if result.returncode == 0:
+            now = datetime.now(timezone.utc).isoformat()
+            with db_connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO notifications (listing_id, sent_at) VALUES (?,?)",
+                    (listing["id"], now)
+                )
+            _wa_status = {"state": "ok", "message": "Sent!"}
+            print(f"[WhatsApp] gem sent: {listing['name']!r}  score={listing['score']}")
+        else:
+            err = result.stderr.strip() or "Unknown error"
+            _wa_status = {"state": "error", "message": err}
+            print(f"[WhatsApp] failed: {err}")
+    except subprocess.TimeoutExpired:
+        _wa_status = {"state": "error", "message": "Timed out after 90s"}
+        print("[WhatsApp] timed out")
     except Exception as e:
         _wa_status = {"state": "error", "message": str(e)}
-        print(f"[WhatsApp] failed: {e}")
+        print(f"[WhatsApp] error: {e}")
 
 
 def check_gems(enriched: list[dict]):
