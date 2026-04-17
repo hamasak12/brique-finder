@@ -201,8 +201,15 @@
     </div>
     <p>Enter your access key to continue.</p>
     <input type="text" id="keyInput" placeholder="bf_xxxxxxxxxxxx" autocomplete="off" />
-    <button class="btn btn-primary" style="width:100%" onclick="submitKey()">Enter</button>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:12px" onclick="submitKey()">Enter</button>
     <div class="err" id="keyErr"></div>
+    <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">⚙️ Server URL</div>
+      <div style="display:flex;gap:6px">
+        <input type="text" id="lockServerUrl" placeholder="http://localhost:5001" style="flex:1;font-size:12px" />
+        <button class="btn btn-secondary btn-sm" onclick="saveLockServerUrl()">Save</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -434,6 +441,16 @@ function openServerModal() {
   document.getElementById("serverUrlInput").value = API;
   document.getElementById("serverModal").classList.add("show");
 }
+
+function saveLockServerUrl() {
+  const val = document.getElementById("lockServerUrl").value.trim().replace(/\/$/, "");
+  if (val) {
+    API = val;
+    localStorage.setItem("ff_server_url", API);
+  }
+  document.getElementById("keyErr").textContent = "Server URL saved.";
+  setTimeout(() => document.getElementById("keyErr").textContent = "", 2000);
+}
 function closeServerModal() {
   document.getElementById("serverModal").classList.remove("show");
 }
@@ -505,6 +522,7 @@ async function checkStoredKey() {
 }
 
 document.getElementById("keyInput").addEventListener("keydown", e => { if (e.key === "Enter") submitKey(); });
+document.getElementById("lockServerUrl").value = API;
 
 // ── Admin panel ───────────────────────────────────────────────────────────────
 function openAdminModal() {
