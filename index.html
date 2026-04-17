@@ -157,6 +157,15 @@
     .empty .emoji{font-size:34px;display:block;margin-bottom:10px}
     .empty p{font-size:13px}
 
+    /* ── Lock screen ── */
+    .lock-screen{position:fixed;inset:0;background:var(--bg);z-index:300;display:flex;align-items:center;justify-content:center;padding:20px}
+    .lock-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:36px 32px;width:100%;max-width:380px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+    .lock-box .logo{justify-content:center;margin-bottom:6px}
+    .lock-box p{color:var(--muted);font-size:13px;margin-bottom:22px}
+    .lock-box input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:monospace;font-size:14px;padding:11px 14px;outline:none;margin-bottom:12px;text-align:center;letter-spacing:.05em;transition:border-color .2s}
+    .lock-box input:focus{border-color:var(--blue)}
+    .lock-box .err{color:var(--red);font-size:12px;margin-top:8px;min-height:18px}
+
     /* ── Responsive ── */
     @media(max-width:680px){
       .search-row{grid-template-columns:1fr}
@@ -177,10 +186,54 @@
       <span class="server-dot" id="serverDot"></span>
       <span class="server-label" id="serverLabel">checking...</span>
     </span>
+    <button class="theme-btn" onclick="openAdminModal()" title="Key manager">🔑</button>
     <button class="theme-btn" onclick="openServerModal()" title="Server settings">⚙️</button>
     <button class="theme-btn" onclick="toggleTheme()">🌙</button>
   </div>
 </header>
+
+<!-- Lock screen -->
+<div class="lock-screen" id="lockScreen">
+  <div class="lock-box">
+    <div class="logo" style="display:flex;align-items:center;gap:10px;justify-content:center;font-size:20px;font-weight:800;margin-bottom:8px">
+      <div class="logo-icon">🔁</div> Brique Finder
+    </div>
+    <p>Enter your access key to continue.</p>
+    <input type="text" id="keyInput" placeholder="bf_xxxxxxxxxxxx" autocomplete="off" />
+    <button class="btn btn-primary" style="width:100%" onclick="submitKey()">Enter</button>
+    <div class="err" id="keyErr"></div>
+  </div>
+</div>
+
+<!-- Admin modal -->
+<div class="modal-backdrop" id="adminModal">
+  <div class="modal" style="max-width:520px">
+    <h3>🔑 Key Manager</h3>
+    <p>Create and revoke access keys for your friends. Share the key — they paste it on the lock screen.</p>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <input type="text" id="adminKeyLabel" placeholder="Label (e.g. Pedro, Maria)" style="flex:1" />
+      <button class="btn btn-primary btn-sm" onclick="adminCreateKey()">Generate Key</button>
+    </div>
+    <div id="adminKeysList"></div>
+    <div style="margin-top:16px;display:flex;justify-content:flex-end">
+      <button class="btn btn-secondary btn-sm" onclick="closeAdminModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Admin password prompt -->
+<div class="modal-backdrop" id="adminAuthModal">
+  <div class="modal" style="max-width:360px;text-align:center">
+    <h3>Admin Access</h3>
+    <p style="margin-bottom:16px">Enter your admin password (<code style="background:var(--surface2);border-radius:4px;padding:2px 6px;font-size:12px">FF_ADMIN_PASSWORD</code>)</p>
+    <input type="password" id="adminPwdInput" placeholder="Password" style="margin-bottom:12px" />
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('adminAuthModal').classList.remove('show')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="submitAdminPwd()">Enter</button>
+    </div>
+    <div class="err" id="adminPwdErr" style="text-align:center;margin-top:8px"></div>
+  </div>
+</div>
 
 <!-- Server config modal -->
 <div class="modal-backdrop" id="serverModal">
@@ -306,7 +359,15 @@
 </div><!-- /container -->
 
 <script>
-let API = localStorage.getItem("ff_server_url") || "http://localhost:5001";
+let API      = localStorage.getItem("ff_server_url") || "http://localhost:5001";
+let _apiKey  = localStorage.getItem("ff_api_key")   || "";
+let _adminPwd = "";
+
+// ── Authenticated fetch ───────────────────────────────────────────────────────
+function apiFetch(url, options = {}) {
+  options.headers = { ...(options.headers || {}), "Authorization": `Bearer ${_apiKey}` };
+  return fetch(url, options);
+}
 
 function openServerModal() {
   document.getElementById("serverUrlInput").value = API;
@@ -331,6 +392,144 @@ document.getElementById("serverModal").addEventListener("click", e => {
 // ── Votes store (in-memory for UI state) ──────────────────────────────────────
 const votes = {};        // listing_id -> 1 or -1
 const listingData = {};  // listing_id -> { name, price }
+
+// ── Lock screen ──────────────────────────────────────────────────────────────
+async function submitKey() {
+  const key = document.getElementById("keyInput").value.trim();
+  if (!key) return;
+  document.getElementById("keyErr").textContent = "";
+  try {
+    const r = await fetch(`${API}/api/auth/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    const d = await r.json();
+    if (d.valid) {
+      _apiKey = key;
+      localStorage.setItem("ff_api_key", key);
+      document.getElementById("lockScreen").style.display = "none";
+      checkServer().then(ok => { if (ok) loadHistoryDropdown(); });
+    } else {
+      document.getElementById("keyErr").textContent = "Invalid key. Ask for a valid one.";
+    }
+  } catch {
+    document.getElementById("keyErr").textContent = "Cannot reach server. Check the ⚙️ server URL first.";
+  }
+}
+
+async function checkStoredKey() {
+  if (!_apiKey) { document.getElementById("lockScreen").style.display = "flex"; return; }
+  try {
+    const r = await fetch(`${API}/api/auth/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: _apiKey }),
+    });
+    const d = await r.json();
+    if (!d.valid) {
+      localStorage.removeItem("ff_api_key");
+      _apiKey = "";
+      document.getElementById("lockScreen").style.display = "flex";
+    } else {
+      document.getElementById("lockScreen").style.display = "none";
+    }
+  } catch {
+    // Server offline — still hide lock screen so user can see the offline banner
+    document.getElementById("lockScreen").style.display = "none";
+  }
+}
+
+document.getElementById("keyInput").addEventListener("keydown", e => { if (e.key === "Enter") submitKey(); });
+
+// ── Admin panel ───────────────────────────────────────────────────────────────
+function openAdminModal() {
+  if (!_adminPwd) {
+    document.getElementById("adminPwdInput").value = "";
+    document.getElementById("adminPwdErr").textContent = "";
+    document.getElementById("adminAuthModal").classList.add("show");
+  } else {
+    document.getElementById("adminModal").classList.add("show");
+    loadAdminKeys();
+  }
+}
+
+async function submitAdminPwd() {
+  const pwd = document.getElementById("adminPwdInput").value;
+  try {
+    const r = await fetch(`${API}/api/admin/keys`, { headers: { "X-Admin-Password": pwd } });
+    if (r.ok) {
+      _adminPwd = pwd;
+      document.getElementById("adminAuthModal").classList.remove("show");
+      document.getElementById("adminModal").classList.add("show");
+      loadAdminKeys();
+    } else {
+      document.getElementById("adminPwdErr").textContent = "Wrong password.";
+    }
+  } catch {
+    document.getElementById("adminPwdErr").textContent = "Server unreachable.";
+  }
+}
+
+document.getElementById("adminPwdInput").addEventListener("keydown", e => { if (e.key === "Enter") submitAdminPwd(); });
+
+function closeAdminModal() {
+  document.getElementById("adminModal").classList.remove("show");
+}
+
+async function loadAdminKeys() {
+  try {
+    const r = await fetch(`${API}/api/admin/keys`, { headers: { "X-Admin-Password": _adminPwd } });
+    const d = await r.json();
+    const list = document.getElementById("adminKeysList");
+    if (!d.keys || !d.keys.length) {
+      list.innerHTML = `<p style="color:var(--muted);font-size:13px">No keys yet.</p>`;
+      return;
+    }
+    list.innerHTML = `<table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="text-align:left;font-size:11px;color:var(--muted);padding:6px 0;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Label</th>
+        <th style="text-align:left;font-size:11px;color:var(--muted);padding:6px 0;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Key</th>
+        <th style="text-align:left;font-size:11px;color:var(--muted);padding:6px 0;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Last used</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+      ${d.keys.map(k => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:8px 0;font-size:13px;font-weight:600">${esc(k.label || "—")}</td>
+        <td style="padding:8px 8px;font-size:11px;font-family:monospace;color:${k.active ? "var(--text)" : "var(--muted)"}">${k.active ? esc(k.key) : "<s>revoked</s>"}</td>
+        <td style="padding:8px 0;font-size:11px;color:var(--muted)">${k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never"}</td>
+        <td style="padding:8px 0;text-align:right">${k.active ? `<button class="btn btn-sm" style="background:var(--red-bg);color:var(--red);border:1px solid var(--red)" onclick="adminRevokeKey(${k.id})">Revoke</button>` : ""}</td>
+      </tr>`).join("")}
+      </tbody></table>`;
+  } catch {}
+}
+
+async function adminCreateKey() {
+  const label = document.getElementById("adminKeyLabel").value.trim();
+  try {
+    const r = await fetch(`${API}/api/admin/keys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Password": _adminPwd },
+      body: JSON.stringify({ label }),
+    });
+    const d = await r.json();
+    document.getElementById("adminKeyLabel").value = "";
+    loadAdminKeys();
+    // Show the new key prominently
+    alert(`New key for "${label || "unnamed"}":\n\n${d.key}\n\nCopy and share this with your friend.`);
+  } catch {}
+}
+
+async function adminRevokeKey(id) {
+  if (!confirm("Revoke this key? The user will be locked out immediately.")) return;
+  try {
+    await fetch(`${API}/api/admin/keys/${id}`, {
+      method: "DELETE",
+      headers: { "X-Admin-Password": _adminPwd },
+    });
+    loadAdminKeys();
+  } catch {}
+}
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 function toggleTheme() {
@@ -362,7 +561,7 @@ async function checkServer() {
       dot.className     = "server-dot ok";
       label.textContent = "server running";
       document.getElementById("offlineBanner").classList.remove("show");
-      const sr = await fetch(`${API}/api/status`);
+      const sr = await apiFetch(`${API}/api/status`);
       if (sr.ok) {
         const s = await sr.json();
         document.getElementById("setupBanner").style.display = s.fb_auth ? "none" : "block";
@@ -379,7 +578,7 @@ async function checkServer() {
 // ── History dropdown ──────────────────────────────────────────────────────────
 async function loadHistoryDropdown() {
   try {
-    const r = await fetch(`${API}/api/history`);
+    const r = await apiFetch(`${API}/api/history`);
     const d = await r.json();
     const sel = document.getElementById("historySelect");
     sel.innerHTML = '<option value="">-- Load a past search --</option>';
@@ -400,7 +599,7 @@ async function runSearch() {
   setLoading(true, "Scanning Facebook Marketplace...");
   hideError(); hideResults();
   try {
-    const r = await fetch(`${API}/api/search`, {
+    const r = await apiFetch(`${API}/api/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query }),
@@ -424,7 +623,7 @@ async function loadHistory() {
   setLoading(true, "Loading past search...");
   hideError(); hideResults();
   try {
-    const r = await fetch(`${API}/api/search/${id}`);
+    const r = await apiFetch(`${API}/api/search/${id}`);
     const d = await r.json();
     renderResults(d.listings || [], "Past search", (d.listings||[]).length, "resultsBody", "resultsTitle", "resultsBadge", "resultsSection");
   } catch { showError("Failed to load."); }
@@ -435,7 +634,7 @@ async function loadTopPicks() {
   setLoading(true, "Loading top picks...");
   hideError(); hideResults();
   try {
-    const r = await fetch(`${API}/api/top-picks`);
+    const r = await apiFetch(`${API}/api/top-picks`);
     const d = await r.json();
     renderResults(d.listings || [], "Top Picks", (d.listings||[]).length, "resultsBody", "resultsTitle", "resultsBadge", "resultsSection");
   } catch { showError("No data yet — run some searches first."); }
@@ -515,7 +714,7 @@ async function vote(listingId, v) {
 
   if (newVote !== 0) {
     try {
-      await fetch(`${API}/api/feedback`, {
+      await apiFetch(`${API}/api/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ listing_id: listingId, listing_name: info.name, listing_price: info.price, vote: newVote }),
@@ -531,7 +730,7 @@ const FEED_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
 
 async function loadKeywords() {
   try {
-    const r = await fetch(`${API}/api/feed/keywords`);
+    const r = await apiFetch(`${API}/api/feed/keywords`);
     const d = await r.json();
     const list = document.getElementById("kwList");
     list.innerHTML = (d.keywords || []).map(k =>
@@ -545,7 +744,7 @@ async function addKeyword() {
   const kw = input.value.trim();
   if (!kw) return;
   try {
-    await fetch(`${API}/api/feed/keywords`, {
+    await apiFetch(`${API}/api/feed/keywords`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ keyword: kw }),
@@ -557,7 +756,7 @@ async function addKeyword() {
 
 async function removeKeyword(id) {
   try {
-    await fetch(`${API}/api/feed/keywords/${id}`, { method: "DELETE" });
+    await apiFetch(`${API}/api/feed/keywords/${id}`, { method: "DELETE" });
     loadKeywords();
   } catch {}
 }
@@ -567,7 +766,7 @@ async function scanFeed() {
   document.getElementById("feedError").classList.remove("show");
 
   try {
-    const r = await fetch(`${API}/api/feed`, { method: "POST" });
+    const r = await apiFetch(`${API}/api/feed`, { method: "POST" });
     const d = await r.json();
     if (!r.ok) {
       document.getElementById("feedError").textContent = d.error || "Feed scan failed.";
@@ -637,7 +836,9 @@ document.getElementById("inputQuery").addEventListener("keydown", e => { if (e.k
 document.getElementById("kwInput").addEventListener("keydown", e => { if (e.key === "Enter") addKeyword(); });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-checkServer().then(ok => { if (ok) loadHistoryDropdown(); });
+checkStoredKey().then(() => {
+  checkServer().then(ok => { if (ok) loadHistoryDropdown(); });
+});
 setInterval(checkServer, 15000);
 </script>
 </body>

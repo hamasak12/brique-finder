@@ -6,9 +6,11 @@ Requires one-time Facebook login:
     python setup_fb.py
 """
 
+import functools
 import json
 import os
 import re
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 from statistics import mean
@@ -21,9 +23,10 @@ from playwright.sync_api import sync_playwright
 app = Flask(__name__)
 CORS(app)
 
-PORT       = 5001
-DB_PATH    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_marketplace.db")
-AUTH_STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_state.json")
+PORT           = 5001
+DB_PATH        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_marketplace.db")
+AUTH_STATE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_state.json")
+ADMIN_PASSWORD = os.environ.get("FF_ADMIN_PASSWORD", "admin")
 
 
 # ── Database ───────────────────────────────────────────────────────────────────
@@ -78,7 +81,45 @@ def db_init():
                 avg_price  REAL,
                 recorded_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS keys (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                key          TEXT UNIQUE NOT NULL,
+                label        TEXT,
+                active       INTEGER DEFAULT 1,
+                created_at   TEXT,
+                last_used_at TEXT
+            );
         """)
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def require_key(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        key  = auth[7:] if auth.startswith("Bearer ") else request.headers.get("X-API-Key", "")
+        if not key:
+            return jsonify({"error": "API key required"}), 401
+        with db_connect() as conn:
+            row = conn.execute("SELECT id FROM keys WHERE key=? AND active=1", (key,)).fetchone()
+        if not row:
+            return jsonify({"error": "Invalid or revoked key"}), 401
+        now = datetime.now(timezone.utc).isoformat()
+        with db_connect() as conn:
+            conn.execute("UPDATE keys SET last_used_at=? WHERE key=?", (now, key))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def require_admin(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        pwd = request.headers.get("X-Admin-Password", "")
+        if pwd != ADMIN_PASSWORD:
+            return jsonify({"error": "Admin access required"}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 
 # ── Scoring Algorithm ──────────────────────────────────────────────────────────
@@ -289,6 +330,7 @@ def _enrich(listings: list[dict], query: str) -> tuple[list[dict], float | None]
 # ── API Routes ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/search", methods=["POST"])
+@require_key
 def api_search():
     body  = request.get_json(force=True) or {}
     query = (body.get("query") or "").strip()
@@ -321,6 +363,7 @@ def api_search():
 
 
 @app.route("/api/feedback", methods=["POST"])
+@require_key
 def api_feedback():
     body  = request.get_json(force=True) or {}
     lid   = (body.get("listing_id") or "").strip()
@@ -344,6 +387,7 @@ def api_feedback():
 
 
 @app.route("/api/feed", methods=["POST"])
+@require_key
 def api_feed():
     """Scan all active feed keywords and return scored results."""
     with db_connect() as conn:
@@ -372,6 +416,7 @@ def api_feed():
 
 
 @app.route("/api/feed/keywords", methods=["GET"])
+@require_key
 def api_feed_keywords_get():
     with db_connect() as conn:
         rows = conn.execute("SELECT id, keyword, active FROM feed_keywords ORDER BY id").fetchall()
@@ -379,6 +424,7 @@ def api_feed_keywords_get():
 
 
 @app.route("/api/feed/keywords", methods=["POST"])
+@require_key
 def api_feed_keywords_add():
     body    = request.get_json(force=True) or {}
     keyword = (body.get("keyword") or "").strip().lower()
@@ -391,6 +437,7 @@ def api_feed_keywords_add():
 
 
 @app.route("/api/feed/keywords/<int:kid>", methods=["DELETE"])
+@require_key
 def api_feed_keywords_delete(kid: int):
     with db_connect() as conn:
         conn.execute("DELETE FROM feed_keywords WHERE id = ?", (kid,))
@@ -398,6 +445,7 @@ def api_feed_keywords_delete(kid: int):
 
 
 @app.route("/api/history", methods=["GET"])
+@require_key
 def api_history():
     with db_connect() as conn:
         rows = conn.execute("""
@@ -409,6 +457,7 @@ def api_history():
 
 
 @app.route("/api/search/<int:search_id>", methods=["GET"])
+@require_key
 def api_search_by_id(search_id: int):
     with db_connect() as conn:
         rows = conn.execute("SELECT * FROM listings WHERE search_id = ? ORDER BY price ASC", (search_id,)).fetchall()
@@ -421,6 +470,7 @@ def api_search_by_id(search_id: int):
 
 
 @app.route("/api/top-picks", methods=["GET"])
+@require_key
 def api_top_picks():
     with db_connect() as conn:
         rows = conn.execute("SELECT l.*, s.query FROM listings l JOIN searches s ON s.id = l.search_id ORDER BY l.price ASC LIMIT 30").fetchall()
@@ -431,6 +481,47 @@ def api_top_picks():
         r["score"] = compute_score(r["price"], avg, feedback)
     results.sort(key=lambda x: x["score"], reverse=True)
     return jsonify({"listings": results})
+
+
+@app.route("/api/auth/validate", methods=["POST"])
+def api_auth_validate():
+    body = request.get_json(force=True) or {}
+    key  = (body.get("key") or "").strip()
+    if not key:
+        return jsonify({"valid": False}), 400
+    with db_connect() as conn:
+        row = conn.execute("SELECT label FROM keys WHERE key=? AND active=1", (key,)).fetchone()
+    if not row:
+        return jsonify({"valid": False}), 401
+    return jsonify({"valid": True, "label": row["label"]})
+
+
+@app.route("/api/admin/keys", methods=["GET"])
+@require_admin
+def admin_keys_list():
+    with db_connect() as conn:
+        rows = conn.execute("SELECT id, key, label, active, created_at, last_used_at FROM keys ORDER BY id DESC").fetchall()
+    return jsonify({"keys": [dict(r) for r in rows]})
+
+
+@app.route("/api/admin/keys", methods=["POST"])
+@require_admin
+def admin_keys_create():
+    body  = request.get_json(force=True) or {}
+    label = (body.get("label") or "").strip()
+    key   = "bf_" + secrets.token_urlsafe(20)
+    now   = datetime.now(timezone.utc).isoformat()
+    with db_connect() as conn:
+        conn.execute("INSERT INTO keys (key, label, active, created_at) VALUES (?,?,1,?)", (key, label, now))
+    return jsonify({"key": key, "label": label})
+
+
+@app.route("/api/admin/keys/<int:kid>", methods=["DELETE"])
+@require_admin
+def admin_keys_revoke(kid: int):
+    with db_connect() as conn:
+        conn.execute("UPDATE keys SET active=0 WHERE id=?", (kid,))
+    return jsonify({"ok": True})
 
 
 @app.route("/api/status", methods=["GET"])
@@ -449,5 +540,17 @@ if __name__ == "__main__":
         print("\n  [!] Facebook session not found. Run: python setup_fb.py\n")
     else:
         print("\n  [ok] Facebook session ready.")
+
+    # Auto-generate first key if none exist
+    with db_connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM keys WHERE active=1").fetchone()[0]
+        if count == 0:
+            first_key = "bf_" + secrets.token_urlsafe(20)
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute("INSERT INTO keys (key, label, active, created_at) VALUES (?,?,1,?)", (first_key, "owner", now))
+            print(f"\n  [key] Your first access key (save this!):")
+            print(f"        {first_key}\n")
+
+    print(f"  Admin password: {ADMIN_PASSWORD}")
     print(f"  FlipFinder running at http://localhost:{PORT}\n")
     app.run(port=PORT, debug=False)
