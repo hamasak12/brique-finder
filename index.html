@@ -585,7 +585,7 @@ async function loadHistoryDropdown() {
     (d.searches || []).forEach(s => {
       const o = document.createElement("option");
       o.value = s.id;
-      o.textContent = `${s.query}  (${s.listing_count} · ${new Date(s.searched_at).toLocaleDateString()})`;
+      o.textContent = `${s.query}  (${s.listing_count} · ${new Date(s.searched_at).toLocaleString("pt-BR", {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})})`;
       sel.appendChild(o);
     });
   } catch {}
