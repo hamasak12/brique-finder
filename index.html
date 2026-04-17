@@ -665,7 +665,7 @@ async function checkServer() {
   const dot   = document.getElementById("serverDot");
   const label = document.getElementById("serverLabel");
   try {
-    const r = await fetch(`${API}/api/ping`, { signal: AbortSignal.timeout(3000) });
+    const r = await fetch(`${API}/api/ping`, { signal: AbortSignal.timeout(3000), headers: { "ngrok-skip-browser-warning": "1" } });
     if (r.ok) {
       dot.className     = "server-dot ok";
       label.textContent = "server running";
