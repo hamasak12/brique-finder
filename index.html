@@ -186,6 +186,7 @@
       <span class="server-dot" id="serverDot"></span>
       <span class="server-label" id="serverLabel">checking...</span>
     </span>
+    <button class="theme-btn" onclick="document.getElementById('howModal').classList.add('show')" title="How it works">?</button>
     <button class="theme-btn" onclick="openAdminModal()" title="Key manager">🔑</button>
     <button class="theme-btn" onclick="openServerModal()" title="Server settings">⚙️</button>
     <button class="theme-btn" onclick="toggleTheme()">🌙</button>
@@ -232,6 +233,64 @@
       <button class="btn btn-primary btn-sm" onclick="submitAdminPwd()">Enter</button>
     </div>
     <div class="err" id="adminPwdErr" style="text-align:center;margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- How it works modal -->
+<div class="modal-backdrop" id="howModal">
+  <div class="modal" style="max-width:560px;max-height:90vh;overflow-y:auto">
+    <h3 style="margin-bottom:18px">How Brique Finder works</h3>
+
+    <div style="display:flex;flex-direction:column;gap:18px;font-size:13px;line-height:1.6;color:var(--text)">
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">🔍 Search</div>
+        <div style="color:var(--muted)">Type any item (e.g. <em>iphone 12</em>, <em>ps5</em>) and click Search. The server opens Facebook Marketplace in Curitiba, captures all listings, and shows them ranked by score. Each search is saved to history.</div>
+      </div>
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">📊 Score (0–100)</div>
+        <div style="color:var(--muted)">Every listing gets a score made of two parts:<br>
+          <strong style="color:var(--green)">Discount (0–60 pts)</strong> — how much cheaper it is vs. the average price for that keyword. 40% below average = 60 pts.<br>
+          <strong style="color:var(--blue)">Preference (−20 to +40 pts)</strong> — how similar the price is to items you liked (👍) vs. disliked (👎). The more you vote, the smarter it gets.
+        </div>
+      </div>
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">💰 Profit estimate</div>
+        <div style="color:var(--muted)">Shows <em>avg price − listing price</em> as estimated flip profit and margin %. Green = ≥40% margin, yellow = ≥20%. The average gets more accurate each time you search for the same keyword.</div>
+      </div>
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">👍 👎 Like / Dislike</div>
+        <div style="color:var(--muted)">Vote on listings to train the score algorithm. Liked items teach it the price range you're happy to buy at. Disliked items make it penalise similar prices in the future. Votes are shared across all users on the same server.</div>
+      </div>
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">📡 Live Feed</div>
+        <div style="color:var(--muted)">Add keywords to monitor (e.g. <em>macbook</em>, <em>xbox</em>). Click <strong>Start Auto-Scan</strong> and the app will re-scan all keywords every 5 minutes automatically, showing the best-scored offers at the top.</div>
+      </div>
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">🕓 History</div>
+        <div style="color:var(--muted)">Every search is saved. The dropdown shows the keyword, how many listings were found, <strong>who searched</strong> (by their key label), and the exact date/time. Load any past search to see what was available then.</div>
+      </div>
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">🔑 Keys</div>
+        <div style="color:var(--muted)">Access is controlled by keys. The 🔑 button (admin only) lets you create a key for each friend with their name as label, and revoke it at any time. History will show their name next to every search they made.</div>
+      </div>
+
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">⚙️ Server URL</div>
+        <div style="color:var(--muted)">The ⚙️ button sets which server the frontend talks to. Default is <code style="background:var(--surface2);border-radius:4px;padding:1px 5px">http://localhost:5001</code>. If sharing via ngrok, friends paste the ngrok URL here once and it's saved in their browser.</div>
+      </div>
+
+    </div>
+
+    <div style="margin-top:22px;display:flex;justify-content:flex-end">
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('howModal').classList.remove('show')">Got it</button>
+    </div>
   </div>
 </div>
 
@@ -387,6 +446,9 @@ function saveServerUrl() {
 }
 document.getElementById("serverModal").addEventListener("click", e => {
   if (e.target === document.getElementById("serverModal")) closeServerModal();
+});
+document.getElementById("howModal").addEventListener("click", e => {
+  if (e.target === document.getElementById("howModal")) document.getElementById("howModal").classList.remove("show");
 });
 
 // ── Votes store (in-memory for UI state) ──────────────────────────────────────
@@ -585,7 +647,8 @@ async function loadHistoryDropdown() {
     (d.searches || []).forEach(s => {
       const o = document.createElement("option");
       o.value = s.id;
-      o.textContent = `${s.query}  (${s.listing_count} · ${new Date(s.searched_at).toLocaleString("pt-BR", {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})})`;
+      const who  = s.key_label ? ` · ${s.key_label}` : "";
+      o.textContent = `${s.query}  (${s.listing_count}${who} · ${new Date(s.searched_at).toLocaleString("pt-BR", {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})})`;
       sel.appendChild(o);
     });
   } catch {}

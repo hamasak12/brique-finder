@@ -90,6 +90,13 @@ def db_init():
                 last_used_at TEXT
             );
         """)
+        # Migration: add key_label to searches if missing
+        try:
+            conn.execute("SELECT key_label FROM searches LIMIT 1")
+        except Exception:
+            conn.execute("ALTER TABLE searches ADD COLUMN key_label TEXT")
+        conn.executescript("""
+        """)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -349,9 +356,18 @@ def api_search():
 
     enriched, avg = _enrich(listings, query)
 
+    # Identify who made the search
+    auth = request.headers.get("Authorization", "")
+    api_key = auth[7:] if auth.startswith("Bearer ") else ""
+    key_label = None
+    if api_key:
+        with db_connect() as conn:
+            row = conn.execute("SELECT label FROM keys WHERE key=?", (api_key,)).fetchone()
+            key_label = row["label"] if row else None
+
     now = datetime.now(timezone.utc).isoformat()
     with db_connect() as conn:
-        cur = conn.execute("INSERT INTO searches (query, searched_at) VALUES (?, ?)", (query, now))
+        cur = conn.execute("INSERT INTO searches (query, searched_at, key_label) VALUES (?, ?, ?)", (query, now, key_label))
         search_id = cur.lastrowid
         for item in enriched:
             conn.execute(
@@ -449,7 +465,7 @@ def api_feed_keywords_delete(kid: int):
 def api_history():
     with db_connect() as conn:
         rows = conn.execute("""
-            SELECT s.id, s.query, s.searched_at, COUNT(l.id) as listing_count
+            SELECT s.id, s.query, s.searched_at, s.key_label, COUNT(l.id) as listing_count
             FROM searches s LEFT JOIN listings l ON l.search_id = s.id
             GROUP BY s.id ORDER BY s.searched_at DESC LIMIT 50
         """).fetchall()
