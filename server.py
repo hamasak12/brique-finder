@@ -26,8 +26,9 @@ app = Flask(__name__)
 CORS(app)
 
 PORT             = 5001
-DB_PATH          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_marketplace.db")
-AUTH_STATE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_state.json")
+DATA_DIR         = os.environ.get("FF_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+DB_PATH          = os.path.join(DATA_DIR, "fb_marketplace.db")
+AUTH_STATE       = os.path.join(DATA_DIR, "auth_state.json")
 ADMIN_PASSWORD   = os.environ.get("FF_ADMIN_PASSWORD", "admin")
 TELEGRAM_TOKEN   = os.environ.get("FF_TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT    = os.environ.get("FF_TELEGRAM_CHAT", "")
@@ -240,7 +241,7 @@ def save_query_avg(query: str, avg: float):
         )
 
 
-# ── Gem Detection & WhatsApp Alerts ───────────────────────────────────────────
+# ── Telegram Alerts & Bot ─────────────────────────────────────────────────────
 
 def dynamic_gem_threshold() -> float:
     """
@@ -257,6 +258,19 @@ def dynamic_gem_threshold() -> float:
     return max(70.0, round(mean(scores) + stdev(scores), 1))
 
 
+def _tg_notify_session_expired():
+    """Alert via Telegram that the Facebook session has expired."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return
+    tg_api("sendMessage", chat_id=TELEGRAM_CHAT, parse_mode="HTML", text=(
+        "⚠️ <b>Sessão do Facebook expirou!</b>\n\n"
+        "Para reautenticar:\n"
+        "1. Rode <code>python setup_fb.py</code> no seu PC\n"
+        "2. Envie o arquivo <code>auth_state.json</code> aqui\n\n"
+        "A sessão será atualizada imediatamente."
+    ))
+
+
 def notify_gem(listing: dict):
     """Send a Telegram alert for a gem listing. Skips duplicates."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
@@ -270,17 +284,17 @@ def notify_gem(listing: dict):
         return
 
     profit = listing.get("avg_price", 0) - listing["price"]
+    item_url = listing.get("item_url", "")
     msg = (
-        f"🔥 *Brique Finder — Gem encontrado!*\n\n"
-        f"*{listing['name']}*\n"
-        f"💰 R$ {listing['price']:.2f}  \\(média R$ {listing.get('avg_price', 0):.2f}\\)\n"
-        f"📈 Lucro est\\.: R$ {profit:.2f}  |  Score: {listing['score']}\n"
-        f"📍 {listing.get('seller_location', '')}\n"
-        f"🔗 {listing.get('item_url', '')}"
+        f"🔥 <b>Brique Finder — Gem encontrado!</b>\n\n"
+        f"<a href=\"{item_url}\"><b>{_esc(listing['name'])}</b></a>\n"
+        f"💰 R$ {listing['price']:.2f}  (média R$ {listing.get('avg_price', 0):.2f})\n"
+        f"📈 Lucro est.: R$ {profit:.2f}  |  Score: {listing['score']}\n"
+        f"📍 {_esc(listing.get('seller_location', ''))}"
     )
 
     url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = json.dumps({"chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "MarkdownV2"}).encode()
+    data = json.dumps({"chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "HTML"}).encode()
     req  = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
 
     try:
@@ -307,6 +321,248 @@ def check_gems(enriched: list[dict]):
     for item in enriched:
         if (item.get("score") or 0) >= threshold:
             notify_gem(item)
+
+
+# ── Telegram Bot (Interactive HUD) ────────────────────────────────────────────
+
+_tg_offset = 0  # long-poll cursor
+
+
+def _esc(s: str) -> str:
+    """HTML-escape text for Telegram HTML parse mode."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+_HUD_KEYBOARD = {
+    "inline_keyboard": [
+        [{"text": "💎 Gems",       "callback_data": "gems"},
+         {"text": "📊 Stats",      "callback_data": "stats"}],
+        [{"text": "🕒 Recentes",   "callback_data": "recent"},
+         {"text": "📈 Threshold",  "callback_data": "threshold"}],
+        [{"text": "🔑 Keywords",   "callback_data": "keywords"},
+         {"text": "🔐 FB Auth",    "callback_data": "fbauth"}],
+        [{"text": "❓ Help",       "callback_data": "help"},
+         {"text": "🔄 Refresh",    "callback_data": "refresh"}],
+        [{"text": "✖ Fechar",     "callback_data": "close"}],
+    ]
+}
+
+_BACK_KEYBOARD = {
+    "inline_keyboard": [[{"text": "◀ Menu", "callback_data": "menu"}]]
+}
+
+
+def tg_api(method: str, **params) -> dict:
+    """Call any Telegram Bot API method."""
+    if not TELEGRAM_TOKEN:
+        return {"ok": False}
+    url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
+    data = json.dumps(params).encode()
+    req  = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=35) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"[Telegram] {method} error: {e}")
+        return {"ok": False}
+
+
+def _hud_text() -> str:
+    with db_connect() as conn:
+        total_scans    = conn.execute("SELECT COUNT(*) FROM searches").fetchone()[0]
+        total_listings = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+        gems_sent      = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+        active_keys    = conn.execute("SELECT COUNT(*) FROM keys WHERE active=1").fetchone()[0]
+    threshold = dynamic_gem_threshold()
+    now = datetime.now(timezone.utc).strftime("%d/%m %H:%M UTC")
+    return (
+        f"🔍 <b>Brique Finder</b>  <i>{now}</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔎 Pesquisas    <b>{total_scans}</b>\n"
+        f"📦 Anúncios     <b>{total_listings}</b>\n"
+        f"💎 Gems         <b>{gems_sent}</b>\n"
+        f"🔑 Keys ativas  <b>{active_keys}</b>\n"
+        f"📈 Threshold    <b>{threshold}</b>"
+    )
+
+
+def tg_send_hud(chat_id):
+    tg_api("sendMessage", chat_id=chat_id, text=_hud_text(),
+           parse_mode="HTML", reply_markup=_HUD_KEYBOARD)
+
+
+def tg_edit(chat_id, message_id: int, text: str, back: bool = False):
+    tg_api("editMessageText", chat_id=chat_id, message_id=message_id,
+           text=text, parse_mode="HTML",
+           reply_markup=_BACK_KEYBOARD if back else _HUD_KEYBOARD)
+
+
+def tg_handle_callback(query: dict):
+    data       = query.get("data", "")
+    chat_id    = query["message"]["chat"]["id"]
+    message_id = query["message"]["message_id"]
+    tg_api("answerCallbackQuery", callback_query_id=query["id"])
+
+    if data in ("menu", "refresh"):
+        tg_edit(chat_id, message_id, _hud_text())
+
+    elif data == "close":
+        tg_api("deleteMessage", chat_id=chat_id, message_id=message_id)
+
+    elif data == "gems":
+        with db_connect() as conn:
+            rows = conn.execute(
+                """SELECT l.name, l.price, l.score, l.item_url, n.sent_at
+                   FROM notifications n
+                   JOIN listings l ON l.id = n.listing_id
+                   ORDER BY n.id DESC LIMIT 5"""
+            ).fetchall()
+        lines = ["💎 <b>Últimos gems</b>\n━━━━━━━━━━━━━━━━━━━━"]
+        if not rows:
+            lines.append("Nenhum gem encontrado ainda.")
+        for r in rows:
+            t = (r["sent_at"] or "")[:16].replace("T", " ")
+            lines.append(
+                f"\n• <a href=\"{r['item_url']}\"><b>{_esc(r['name'])}</b></a>\n"
+                f"  💰 R$ {r['price']:.2f}  |  Score {r['score']}  <i>{t}</i>"
+            )
+        tg_edit(chat_id, message_id, "\n".join(lines), back=True)
+
+    elif data == "stats":
+        with db_connect() as conn:
+            recent = conn.execute(
+                "SELECT query, searched_at, key_label FROM searches ORDER BY id DESC LIMIT 8"
+            ).fetchall()
+        lines = ["📊 <b>Últimas pesquisas</b>\n━━━━━━━━━━━━━━━━━━━━"]
+        for r in recent:
+            t = (r["searched_at"] or "")[:16].replace("T", " ")
+            who = f" <i>({_esc(r['key_label'])})</i>" if r["key_label"] else ""
+            lines.append(f"• {_esc(r['query'])}{who}  <i>{t}</i>")
+        tg_edit(chat_id, message_id, "\n".join(lines), back=True)
+
+    elif data == "recent":
+        with db_connect() as conn:
+            rows = conn.execute(
+                """SELECT name, price, score, item_url
+                   FROM listings WHERE score IS NOT NULL
+                   ORDER BY score DESC, found_at DESC LIMIT 6"""
+            ).fetchall()
+        lines = ["🕒 <b>Top anúncios (score)</b>\n━━━━━━━━━━━━━━━━━━━━"]
+        for r in rows:
+            lines.append(
+                f"\n• <a href=\"{r['item_url']}\"><b>{_esc(r['name'])}</b></a>\n"
+                f"  💰 R$ {r['price']:.2f}  |  Score {r['score']}"
+            )
+        tg_edit(chat_id, message_id, "\n".join(lines), back=True)
+
+    elif data == "threshold":
+        threshold = dynamic_gem_threshold()
+        with db_connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM listings WHERE score IS NOT NULL"
+            ).fetchone()[0]
+        text = (
+            f"📈 <b>Gem Threshold</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Threshold atual: <b>{threshold}</b>\n\n"
+            f"Anúncios com score: <b>{count}</b>\n\n"
+            f"Fórmula: <code>max(70, média + desvio)</code>\n"
+            f"Calculado sobre os últimos 200 anúncios."
+        )
+        tg_edit(chat_id, message_id, text, back=True)
+
+    elif data == "keywords":
+        with db_connect() as conn:
+            rows = conn.execute(
+                "SELECT keyword, active FROM feed_keywords ORDER BY keyword"
+            ).fetchall()
+        lines = ["🔑 <b>Keywords do feed</b>\n━━━━━━━━━━━━━━━━━━━━"]
+        if not rows:
+            lines.append("Nenhuma keyword configurada.")
+        for r in rows:
+            lines.append(f"{'✅' if r['active'] else '⏸'} {_esc(r['keyword'])}")
+        tg_edit(chat_id, message_id, "\n".join(lines), back=True)
+
+    elif data == "fbauth":
+        status = "✅ Ativa" if os.path.exists(AUTH_STATE) else "❌ Não encontrada"
+        text = (
+            f"🔐 <b>Facebook Auth</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Sessão: <b>{status}</b>\n\n"
+            f"Para reautenticar:\n"
+            f"1. Rode <code>python setup_fb.py</code> no seu PC\n"
+            f"2. Envie o arquivo <code>auth_state.json</code> aqui\n\n"
+            f"O arquivo será aplicado imediatamente."
+        )
+        tg_edit(chat_id, message_id, text, back=True)
+
+    elif data == "help":
+        text = (
+            f"❓ <b>Como funciona</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Escaneia o Facebook Marketplace de Curitiba buscando "
+            f"ofertas abaixo do preço médio.\n\n"
+            f"<b>Score (0–100):</b>\n"
+            f"• Desconto → até 60 pts\n"
+            f"• Feedback aprendido → ±20 pts\n"
+            f"• Defeito detectado → −20 pts cada\n\n"
+            f"<b>Gem:</b> score ≥ threshold adaptativo\n"
+            f"(média + desvio dos últimos 200 anúncios)\n\n"
+            f"<b>Comandos:</b>\n"
+            f"/start — abrir este menu"
+        )
+        tg_edit(chat_id, message_id, text, back=True)
+
+
+def tg_handle_message(msg: dict):
+    text    = msg.get("text", "").strip()
+    chat_id = msg["chat"]["id"]
+
+    if text.startswith("/start") or text.startswith("/menu"):
+        tg_send_hud(chat_id)
+        return
+
+    doc = msg.get("document")
+    if doc and doc.get("file_name") == "auth_state.json":
+        try:
+            file_info = tg_api("getFile", file_id=doc["file_id"])
+            fp        = file_info["result"]["file_path"]
+            dl_url    = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{fp}"
+            urllib.request.urlretrieve(dl_url, AUTH_STATE)
+            tg_api("sendMessage", chat_id=chat_id, parse_mode="HTML",
+                   text="✅ <b>Sessão atualizada!</b> O servidor já pode buscar no Facebook.")
+        except Exception as e:
+            tg_api("sendMessage", chat_id=chat_id, text=f"❌ Erro ao salvar sessão: {e}")
+
+
+def tg_polling_loop():
+    global _tg_offset
+    import time
+    print("[Telegram] Bot polling started — send /start to open the HUD.")
+    while True:
+        try:
+            result = tg_api(
+                "getUpdates", offset=_tg_offset, timeout=30,
+                allowed_updates=["message", "callback_query"]
+            )
+            if not result.get("ok"):
+                time.sleep(5)
+                continue
+            for update in result.get("result", []):
+                _tg_offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    try:
+                        tg_handle_callback(update["callback_query"])
+                    except Exception as e:
+                        print(f"[Telegram] callback error: {e}")
+                elif "message" in update:
+                    try:
+                        tg_handle_message(update["message"])
+                    except Exception as e:
+                        print(f"[Telegram] message error: {e}")
+        except Exception as e:
+            print(f"[Telegram] polling error: {e}")
+            time.sleep(5)
 
 
 # ── Facebook Marketplace (Playwright) ─────────────────────────────────────────
@@ -393,7 +649,12 @@ def fb_search(query: str) -> list[dict]:
         except Exception as e:
             print(f"[FB] page error: {e}")
 
-        print(f"[FB] title: {page.title()!r}  graphql: {len(pending)}")
+        title = page.title()
+        print(f"[FB] title: {title!r}  graphql: {len(pending)}")
+        if "log in" in title.lower() or "log into" in title.lower():
+            browser.close()
+            threading.Thread(target=_tg_notify_session_expired, daemon=True).start()
+            raise RuntimeError("Facebook session expired. Send auth_state.json to the Telegram bot.")
 
         captured = []
         for resp in pending:
@@ -671,21 +932,23 @@ def admin_test_telegram():
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
         return jsonify({"ok": False, "error": "Set FF_TELEGRAM_TOKEN and FF_TELEGRAM_CHAT before running server"}), 400
 
-    test_listing = {
-        "id":              "__test__",
-        "name":            "Teste — Brique Finder",
-        "price":           100.0,
-        "avg_price":       200.0,
-        "score":           99.0,
-        "seller_location": "Curitiba, PR",
-        "item_url":        "https://www.facebook.com/marketplace/",
-    }
-    with db_connect() as conn:
-        conn.execute("DELETE FROM notifications WHERE listing_id='__test__'")
+    msg = (
+        "🔥 <b>Brique Finder — Teste de alerta!</b>\n\n"
+        "<a href=\"https://www.facebook.com/marketplace/\"><b>Teste — Brique Finder</b></a>\n"
+        "💰 R$ 100.00  (média R$ 200.00)\n"
+        "📈 Lucro est.: R$ 100.00  |  Score: 99.0\n"
+        "📍 Curitiba, PR"
+    )
+    url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = json.dumps({"chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "HTML"}).encode()
+    req  = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
 
     try:
-        notify_gem(test_listing)
-        return jsonify({"ok": True})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+        if result.get("ok"):
+            return jsonify({"ok": True})
+        return jsonify({"ok": False, "error": result.get("description", "Unknown API error")}), 400
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -720,6 +983,8 @@ if __name__ == "__main__":
     print(f"  Admin password: {ADMIN_PASSWORD}")
     if TELEGRAM_TOKEN and TELEGRAM_CHAT:
         print(f"  [Telegram] chat: {TELEGRAM_CHAT}")
+        bot_thread = threading.Thread(target=tg_polling_loop, daemon=True)
+        bot_thread.start()
     else:
         print(f"  [Telegram] not configured — set FF_TELEGRAM_TOKEN and FF_TELEGRAM_CHAT")
     print(f"  Brique Finder running at http://localhost:{PORT}\n")
