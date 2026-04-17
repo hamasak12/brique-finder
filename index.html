@@ -431,9 +431,14 @@ let API      = localStorage.getItem("ff_server_url") || "http://localhost:5001";
 let _apiKey  = localStorage.getItem("ff_api_key")   || "";
 let _adminPwd = "";
 
-// ── Authenticated fetch ───────────────────────────────────────────────────────
+// ── Fetch helpers ─────────────────────────────────────────────────────────────
+const NGROK = { "ngrok-skip-browser-warning": "1" };
+function baseFetch(url, options = {}) {
+  options.headers = { ...NGROK, ...(options.headers || {}) };
+  return fetch(url, options);
+}
 function apiFetch(url, options = {}) {
-  options.headers = { ...(options.headers || {}), "Authorization": `Bearer ${_apiKey}`, "ngrok-skip-browser-warning": "1" };
+  options.headers = { ...NGROK, ...(options.headers || {}), "Authorization": `Bearer ${_apiKey}` };
   return fetch(url, options);
 }
 
@@ -480,9 +485,9 @@ async function submitKey() {
   if (!key) return;
   document.getElementById("keyErr").textContent = "";
   try {
-    const r = await fetch(`${API}/api/auth/validate`, {
+    const r = await baseFetch(`${API}/api/auth/validate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
     });
     const d = await r.json();
@@ -502,9 +507,9 @@ async function submitKey() {
 async function checkStoredKey() {
   if (!_apiKey) { document.getElementById("lockScreen").style.display = "flex"; return; }
   try {
-    const r = await fetch(`${API}/api/auth/validate`, {
+    const r = await baseFetch(`${API}/api/auth/validate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: _apiKey }),
     });
     const d = await r.json();
@@ -539,7 +544,7 @@ function openAdminModal() {
 async function submitAdminPwd() {
   const pwd = document.getElementById("adminPwdInput").value;
   try {
-    const r = await fetch(`${API}/api/admin/keys`, { headers: { "X-Admin-Password": pwd } });
+    const r = await baseFetch(`${API}/api/admin/keys`, { headers: { "X-Admin-Password": pwd } });
     if (r.ok) {
       _adminPwd = pwd;
       document.getElementById("adminAuthModal").classList.remove("show");
@@ -561,7 +566,7 @@ function closeAdminModal() {
 
 async function loadAdminKeys() {
   try {
-    const r = await fetch(`${API}/api/admin/keys`, { headers: { "X-Admin-Password": _adminPwd } });
+    const r = await baseFetch(`${API}/api/admin/keys`, { headers: { "X-Admin-Password": _adminPwd } });
     const d = await r.json();
     const list = document.getElementById("adminKeysList");
     if (!d.keys || !d.keys.length) {
@@ -589,7 +594,7 @@ async function loadAdminKeys() {
 async function adminCreateKey() {
   const label = document.getElementById("adminKeyLabel").value.trim();
   try {
-    const r = await fetch(`${API}/api/admin/keys`, {
+    const r = await baseFetch(`${API}/api/admin/keys`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Admin-Password": _adminPwd },
       body: JSON.stringify({ label }),
@@ -609,7 +614,7 @@ async function testWhatsapp() {
   status.style.color = "var(--muted)";
   status.textContent = "Sending...";
   try {
-    const r = await fetch(`${API}/api/admin/test-telegram`, {
+    const r = await baseFetch(`${API}/api/admin/test-telegram`, {
       method: "POST",
       headers: { "X-Admin-Password": _adminPwd },
     });
@@ -632,7 +637,7 @@ async function testWhatsapp() {
 async function adminRevokeKey(id) {
   if (!confirm("Revoke this key? The user will be locked out immediately.")) return;
   try {
-    await fetch(`${API}/api/admin/keys/${id}`, {
+    await baseFetch(`${API}/api/admin/keys/${id}`, {
       method: "DELETE",
       headers: { "X-Admin-Password": _adminPwd },
     });
