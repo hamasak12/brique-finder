@@ -590,57 +590,25 @@ async function testWhatsapp() {
   btn.disabled = true;
   status.style.color = "var(--muted)";
   status.textContent = "Sending...";
-
-  // Fire the test
   try {
-    const r = await fetch(`${API}/api/admin/test-whatsapp`, {
+    const r = await fetch(`${API}/api/admin/test-telegram`, {
       method: "POST",
       headers: { "X-Admin-Password": _adminPwd },
     });
     const d = await r.json();
-    if (!d.ok) {
+    if (d.ok) {
+      status.style.color = "var(--green)";
+      status.textContent = "Sent! Check your group.";
+    } else {
       status.style.color = "var(--red)";
       status.textContent = d.error || "Failed.";
-      btn.disabled = false;
-      return;
     }
   } catch {
     status.style.color = "var(--red)";
     status.textContent = "Could not reach server.";
+  } finally {
     btn.disabled = false;
-    return;
   }
-
-  // Poll for real result (WhatsApp runs in background thread)
-  const deadline = Date.now() + 60_000;
-  const poll = async () => {
-    if (Date.now() > deadline) {
-      status.style.color = "var(--red)";
-      status.textContent = "Timed out — check server terminal for errors.";
-      btn.disabled = false;
-      return;
-    }
-    try {
-      const r = await fetch(`${API}/api/admin/test-whatsapp/status`, {
-        headers: { "X-Admin-Password": _adminPwd },
-      });
-      const d = await r.json();
-      if (d.state === "ok") {
-        status.style.color = "var(--green)";
-        status.textContent = "Sent! Check your group.";
-        btn.disabled = false;
-      } else if (d.state === "error") {
-        status.style.color = "var(--red)";
-        status.textContent = d.message || "Failed.";
-        btn.disabled = false;
-      } else {
-        setTimeout(poll, 2000);  // still sending, check again
-      }
-    } catch {
-      setTimeout(poll, 2000);
-    }
-  };
-  setTimeout(poll, 2000);
 }
 
 async function adminRevokeKey(id) {

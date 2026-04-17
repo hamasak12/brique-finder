@@ -12,9 +12,8 @@ import os
 import re
 import secrets
 import sqlite3
-import subprocess
-import sys
 import threading
+import urllib.request
 from datetime import datetime, timezone
 from statistics import mean, stdev
 from urllib.parse import quote_plus
@@ -26,13 +25,12 @@ from playwright.sync_api import sync_playwright
 app = Flask(__name__)
 CORS(app)
 
-PORT           = 5001
-DB_PATH        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_marketplace.db")
-AUTH_STATE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_state.json")
+PORT             = 5001
+DB_PATH          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_marketplace.db")
+AUTH_STATE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_state.json")
 ADMIN_PASSWORD   = os.environ.get("FF_ADMIN_PASSWORD", "admin")
-WHATSAPP_GROUP   = os.environ.get("FF_WHATSAPP_GROUP", "")
-WA_AUTH          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_auth.json")
-WA_SENDER        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_wa_sender.py")
+TELEGRAM_TOKEN   = os.environ.get("FF_TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT    = os.environ.get("FF_TELEGRAM_CHAT", "")
 
 
 # ── Database ───────────────────────────────────────────────────────────────────
@@ -259,15 +257,9 @@ def dynamic_gem_threshold() -> float:
     return max(70.0, round(mean(scores) + stdev(scores), 1))
 
 
-# Tracks the last WhatsApp send attempt for the test-alert UI
-_wa_status: dict = {"state": "idle", "message": ""}
-
-
 def notify_gem(listing: dict):
-    """Send a WhatsApp alert for a gem listing via subprocess. Skips duplicates."""
-    global _wa_status
-
-    if not WHATSAPP_GROUP or not os.path.exists(WA_AUTH):
+    """Send a Telegram alert for a gem listing. Skips duplicates."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
         return
 
     with db_connect() as conn:
@@ -281,37 +273,31 @@ def notify_gem(listing: dict):
     msg = (
         f"🔥 *Brique Finder — Gem encontrado!*\n\n"
         f"*{listing['name']}*\n"
-        f"💰 R$ {listing['price']:.2f}  (média R$ {listing.get('avg_price', 0):.2f})\n"
-        f"📈 Lucro est.: R$ {profit:.2f}  |  Score: {listing['score']}\n"
+        f"💰 R$ {listing['price']:.2f}  \\(média R$ {listing.get('avg_price', 0):.2f}\\)\n"
+        f"📈 Lucro est\\.: R$ {profit:.2f}  |  Score: {listing['score']}\n"
         f"📍 {listing.get('seller_location', '')}\n"
         f"🔗 {listing.get('item_url', '')}"
     )
 
-    _wa_status = {"state": "sending", "message": ""}
+    url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = json.dumps({"chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "MarkdownV2"}).encode()
+    req  = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+
     try:
-        result = subprocess.run(
-            [sys.executable, WA_SENDER, WHATSAPP_GROUP, msg],
-            capture_output=True, text=True, timeout=90
-        )
-        if result.returncode == 0:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+        if result.get("ok"):
             now = datetime.now(timezone.utc).isoformat()
             with db_connect() as conn:
                 conn.execute(
                     "INSERT OR IGNORE INTO notifications (listing_id, sent_at) VALUES (?,?)",
                     (listing["id"], now)
                 )
-            _wa_status = {"state": "ok", "message": "Sent!"}
-            print(f"[WhatsApp] gem sent: {listing['name']!r}  score={listing['score']}")
+            print(f"[Telegram] gem sent: {listing['name']!r}  score={listing['score']}")
         else:
-            err = result.stderr.strip() or "Unknown error"
-            _wa_status = {"state": "error", "message": err}
-            print(f"[WhatsApp] failed: {err}")
-    except subprocess.TimeoutExpired:
-        _wa_status = {"state": "error", "message": "Timed out after 90s"}
-        print("[WhatsApp] timed out")
+            print(f"[Telegram] API error: {result}")
     except Exception as e:
-        _wa_status = {"state": "error", "message": str(e)}
-        print(f"[WhatsApp] error: {e}")
+        print(f"[Telegram] failed: {e}")
 
 
 def check_gems(enriched: list[dict]):
@@ -679,13 +665,11 @@ def admin_keys_revoke(kid: int):
     return jsonify({"ok": True})
 
 
-@app.route("/api/admin/test-whatsapp", methods=["POST"])
+@app.route("/api/admin/test-telegram", methods=["POST"])
 @require_admin
-def admin_test_whatsapp():
-    if not WHATSAPP_GROUP:
-        return jsonify({"ok": False, "error": "FF_WHATSAPP_GROUP not set"}), 400
-    if not os.path.exists(WA_AUTH):
-        return jsonify({"ok": False, "error": "WhatsApp session not found. Run: python setup_whatsapp.py"}), 400
+def admin_test_telegram():
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return jsonify({"ok": False, "error": "Set FF_TELEGRAM_TOKEN and FF_TELEGRAM_CHAT before running server"}), 400
 
     test_listing = {
         "id":              "__test__",
@@ -696,25 +680,19 @@ def admin_test_whatsapp():
         "seller_location": "Curitiba, PR",
         "item_url":        "https://www.facebook.com/marketplace/",
     }
-    # Clear dedup so test always fires
     with db_connect() as conn:
         conn.execute("DELETE FROM notifications WHERE listing_id='__test__'")
 
-    # Run in background so request returns immediately
-    t = threading.Thread(target=notify_gem, args=(test_listing,), daemon=True)
-    t.start()
-    return jsonify({"ok": True})
+    try:
+        notify_gem(test_listing)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/status", methods=["GET"])
 def api_status():
     return jsonify({"fb_auth": os.path.exists(AUTH_STATE)})
-
-
-@app.route("/api/admin/test-whatsapp/status", methods=["GET"])
-@require_admin
-def admin_test_whatsapp_status():
-    return jsonify(_wa_status)
 
 
 @app.route("/api/ping", methods=["GET"])
@@ -740,9 +718,9 @@ if __name__ == "__main__":
             print(f"        {first_key}\n")
 
     print(f"  Admin password: {ADMIN_PASSWORD}")
-    if WHATSAPP_GROUP:
-        print(f"  [WhatsApp] group: {WHATSAPP_GROUP}")
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT:
+        print(f"  [Telegram] chat: {TELEGRAM_CHAT}")
     else:
-        print(f"  [WhatsApp] not configured — set FF_WHATSAPP_GROUP to enable gem alerts")
+        print(f"  [Telegram] not configured — set FF_TELEGRAM_TOKEN and FF_TELEGRAM_CHAT")
     print(f"  Brique Finder running at http://localhost:{PORT}\n")
     app.run(port=PORT, debug=False)
