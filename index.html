@@ -216,7 +216,9 @@
       <button class="btn btn-primary btn-sm" onclick="adminCreateKey()">Generate Key</button>
     </div>
     <div id="adminKeysList"></div>
-    <div style="margin-top:16px;display:flex;justify-content:flex-end">
+    <div style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <button class="btn btn-sm" id="btnTestWA" onclick="testWhatsapp()" style="background:var(--green-bg);color:var(--green);border:1px solid var(--green)">Send Test Alert</button>
+      <span id="testWAStatus" style="font-size:12px;color:var(--muted)"></span>
       <button class="btn btn-secondary btn-sm" onclick="closeAdminModal()">Close</button>
     </div>
   </div>
@@ -580,6 +582,33 @@ async function adminCreateKey() {
     // Show the new key prominently
     alert(`New key for "${label || "unnamed"}":\n\n${d.key}\n\nCopy and share this with your friend.`);
   } catch {}
+}
+
+async function testWhatsapp() {
+  const btn    = document.getElementById("btnTestWA");
+  const status = document.getElementById("testWAStatus");
+  btn.disabled = true;
+  status.style.color = "var(--muted)";
+  status.textContent = "Sending...";
+  try {
+    const r = await fetch(`${API}/api/admin/test-whatsapp`, {
+      method: "POST",
+      headers: { "X-Admin-Password": _adminPwd },
+    });
+    const d = await r.json();
+    if (d.ok) {
+      status.style.color = "var(--green)";
+      status.textContent = "Sent! Check your group.";
+    } else {
+      status.style.color = "var(--red)";
+      status.textContent = d.error || "Failed.";
+    }
+  } catch {
+    status.style.color = "var(--red)";
+    status.textContent = "Could not reach server.";
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function adminRevokeKey(id) {

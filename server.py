@@ -636,6 +636,33 @@ def admin_keys_revoke(kid: int):
     return jsonify({"ok": True})
 
 
+@app.route("/api/admin/test-whatsapp", methods=["POST"])
+@require_admin
+def admin_test_whatsapp():
+    if not WHATSAPP_GROUP:
+        return jsonify({"ok": False, "error": "FF_WHATSAPP_GROUP not set"}), 400
+    if not os.path.exists(WA_AUTH):
+        return jsonify({"ok": False, "error": "WhatsApp session not found. Run: python setup_whatsapp.py"}), 400
+
+    test_listing = {
+        "id":              "__test__",
+        "name":            "Teste — Brique Finder",
+        "price":           100.0,
+        "avg_price":       200.0,
+        "score":           99.0,
+        "seller_location": "Curitiba, PR",
+        "item_url":        "https://www.facebook.com/marketplace/",
+    }
+    try:
+        # Bypass dedup for test
+        with db_connect() as conn:
+            conn.execute("DELETE FROM notifications WHERE listing_id='__test__'")
+        notify_gem(test_listing)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/status", methods=["GET"])
 def api_status():
     return jsonify({"fb_auth": os.path.exists(AUTH_STATE)})
