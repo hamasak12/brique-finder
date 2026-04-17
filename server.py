@@ -12,8 +12,9 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
-from statistics import mean
+from statistics import mean, stdev
 from urllib.parse import quote_plus
 
 from flask import Flask, jsonify, request
@@ -26,7 +27,8 @@ CORS(app)
 PORT           = 5001
 DB_PATH        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_marketplace.db")
 AUTH_STATE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_state.json")
-ADMIN_PASSWORD = os.environ.get("FF_ADMIN_PASSWORD", "admin")
+ADMIN_PASSWORD   = os.environ.get("FF_ADMIN_PASSWORD", "admin")
+WHATSAPP_GROUP   = os.environ.get("FF_WHATSAPP_GROUP", "")
 
 
 # ── Database ───────────────────────────────────────────────────────────────────
@@ -90,13 +92,21 @@ def db_init():
                 last_used_at TEXT
             );
         """)
-        # Migration: add key_label to searches if missing
+            CREATE TABLE IF NOT EXISTS notifications (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                listing_id TEXT UNIQUE,
+                sent_at    TEXT
+            );
+        """)
+        # Migrations
         try:
             conn.execute("SELECT key_label FROM searches LIMIT 1")
         except Exception:
             conn.execute("ALTER TABLE searches ADD COLUMN key_label TEXT")
-        conn.executescript("""
-        """)
+        try:
+            conn.execute("SELECT score FROM listings LIMIT 1")
+        except Exception:
+            conn.execute("ALTER TABLE listings ADD COLUMN score REAL")
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -195,6 +205,72 @@ def save_query_avg(query: str, avg: float):
             "INSERT INTO price_history (query, avg_price, recorded_at) VALUES (?, ?, ?)",
             (query, avg, now)
         )
+
+
+# ── Gem Detection & WhatsApp Alerts ───────────────────────────────────────────
+
+def dynamic_gem_threshold() -> float:
+    """
+    Adaptive threshold: mean + 1 stddev of the last 200 scored listings.
+    Falls back to 70.0 if not enough data yet.
+    """
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT score FROM listings WHERE score IS NOT NULL ORDER BY found_at DESC LIMIT 200"
+        ).fetchall()
+    scores = [r["score"] for r in rows if r["score"] is not None]
+    if len(scores) < 10:
+        return 70.0
+    return max(70.0, round(mean(scores) + stdev(scores), 1))
+
+
+def notify_gem(listing: dict):
+    """Send a WhatsApp message for a gem listing. Skips duplicates."""
+    if not WHATSAPP_GROUP:
+        return
+
+    with db_connect() as conn:
+        already = conn.execute(
+            "SELECT 1 FROM notifications WHERE listing_id=?", (listing["id"],)
+        ).fetchone()
+    if already:
+        return
+
+    profit = listing.get("avg_price", 0) - listing["price"]
+    msg = (
+        f"🔥 *Brique Finder — Gem encontrado!*\n\n"
+        f"*{listing['name']}*\n"
+        f"💰 R$ {listing['price']:.2f}  (média R$ {listing.get('avg_price', 0):.2f})\n"
+        f"📈 Lucro est.: R$ {profit:.2f}  |  Score: {listing['score']}\n"
+        f"📍 {listing.get('seller_location', '')}\n"
+        f"🔗 {listing.get('item_url', '')}"
+    )
+
+    try:
+        subprocess.run(
+            ["wacli", "send", "text", "--to", WHATSAPP_GROUP, "--message", msg],
+            timeout=15, capture_output=True, check=False
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with db_connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO notifications (listing_id, sent_at) VALUES (?,?)",
+                (listing["id"], now)
+            )
+        print(f"[WhatsApp] gem sent: {listing['name']!r}  score={listing['score']}")
+    except FileNotFoundError:
+        print("[WhatsApp] wacli not found — install from https://github.com/steipete/wacli/releases")
+    except Exception as e:
+        print(f"[WhatsApp] notify failed: {e}")
+
+
+def check_gems(enriched: list[dict]):
+    """Check a list of enriched listings for gems and notify."""
+    threshold = dynamic_gem_threshold()
+    print(f"[Gem] threshold={threshold}")
+    for item in enriched:
+        if (item.get("score") or 0) >= threshold:
+            notify_gem(item)
 
 
 # ── Facebook Marketplace (Playwright) ─────────────────────────────────────────
@@ -371,10 +447,11 @@ def api_search():
         search_id = cur.lastrowid
         for item in enriched:
             conn.execute(
-                "INSERT OR REPLACE INTO listings (id, name, price, photo_url, item_url, seller_name, seller_location, search_id, found_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (item["id"], item["name"], item["price"], item.get("photo_url",""), item.get("item_url",""), item.get("seller_name",""), item.get("seller_location",""), search_id, now)
+                "INSERT OR REPLACE INTO listings (id, name, price, photo_url, item_url, seller_name, seller_location, search_id, found_at, score) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (item["id"], item["name"], item["price"], item.get("photo_url",""), item.get("item_url",""), item.get("seller_name",""), item.get("seller_location",""), search_id, now, item.get("score"))
             )
 
+    check_gems(enriched)
     return jsonify({"search_id": search_id, "query": query, "avg_price": avg, "count": len(enriched), "listings": enriched})
 
 
@@ -427,6 +504,7 @@ def api_feed():
             errors.append(f"{kw}: {e}")
 
     all_results.sort(key=lambda x: x["score"], reverse=True)
+    check_gems(all_results)
 
     return jsonify({"listings": all_results, "keywords_scanned": keywords, "errors": errors})
 
@@ -568,5 +646,9 @@ if __name__ == "__main__":
             print(f"        {first_key}\n")
 
     print(f"  Admin password: {ADMIN_PASSWORD}")
-    print(f"  FlipFinder running at http://localhost:{PORT}\n")
+    if WHATSAPP_GROUP:
+        print(f"  [WhatsApp] group: {WHATSAPP_GROUP}")
+    else:
+        print(f"  [WhatsApp] not configured — set FF_WHATSAPP_GROUP to enable gem alerts")
+    print(f"  Brique Finder running at http://localhost:{PORT}\n")
     app.run(port=PORT, debug=False)
