@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from statistics import mean, stdev
 from urllib.parse import quote_plus
@@ -139,6 +140,13 @@ def require_admin(f):
 
 
 # ── Defect Detection ──────────────────────────────────────────────────────────
+
+BUYER_PREFIXES = (
+    "compro ", "compro!", "compro,",
+    "quero comprar", "procuro ", "busco ",
+    "interesse em comprar", "compra ", "troco por",
+    "alguem vende", "alguém vende",
+)
 
 DEFECT_KEYWORDS = [
     "defeito", "defeitos", "com defeito",
@@ -431,30 +439,37 @@ def fb_search(query: str) -> list[dict]:
 
 def _enrich(listings: list[dict], query: str) -> tuple[list[dict], float | None]:
     """Add score to each listing. Returns (enriched_listings, avg_price)."""
+    # Filter out buyer-intent listings (people looking to buy, not sell)
+    listings = [
+        l for l in listings
+        if not any(l.get("name", "").lower().startswith(p) for p in BUYER_PREFIXES)
+    ]
+
     prices = [l["price"] for l in listings if l["price"] > 0]
     if not prices:
         return listings, None
 
     query_avg = round(mean(prices), 2)
 
-    # Prefer stored historical average if we have more data
-    stored_avg = get_query_avg(query)
-    effective_avg = stored_avg if stored_avg else query_avg
+    # Use stored historical average for scoring (more stable), but fresh avg for profit display
+    stored_avg    = get_query_avg(query)
+    scoring_avg   = stored_avg if stored_avg else query_avg
     save_query_avg(query, query_avg)
 
     feedback = get_feedback()
 
     enriched = []
     for listing in listings:
-        score   = compute_score(listing["price"], effective_avg, feedback)
+        score   = compute_score(listing["price"], scoring_avg, feedback)
         defects = detect_defects(listing.get("name", ""))
         if defects:
             penalty = min(50.0, len(defects) * 20.0)
             score   = max(0.0, round(score - penalty, 1))
-        enriched.append({**listing, "score": score, "avg_price": effective_avg, "defects": defects})
+        # avg_price uses fresh query_avg so profit always reflects current market
+        enriched.append({**listing, "score": score, "avg_price": query_avg, "defects": defects})
 
     enriched.sort(key=lambda x: x["score"], reverse=True)
-    return enriched, effective_avg
+    return enriched, query_avg
 
 
 # ── API Routes ─────────────────────────────────────────────────────────────────
@@ -498,7 +513,7 @@ def api_search():
                 (item["id"], item["name"], item["price"], item.get("photo_url",""), item.get("item_url",""), item.get("seller_name",""), item.get("seller_location",""), search_id, now, item.get("score"))
             )
 
-    check_gems(enriched)
+    threading.Thread(target=check_gems, args=(enriched,), daemon=True).start()
     return jsonify({"search_id": search_id, "query": query, "avg_price": avg, "count": len(enriched), "listings": enriched})
 
 
@@ -551,7 +566,7 @@ def api_feed():
             errors.append(f"{kw}: {e}")
 
     all_results.sort(key=lambda x: x["score"], reverse=True)
-    check_gems(all_results)
+    threading.Thread(target=check_gems, args=(all_results,), daemon=True).start()
 
     return jsonify({"listings": all_results, "keywords_scanned": keywords, "errors": errors})
 
@@ -682,14 +697,14 @@ def admin_test_whatsapp():
         "seller_location": "Curitiba, PR",
         "item_url":        "https://www.facebook.com/marketplace/",
     }
-    try:
-        # Bypass dedup for test
-        with db_connect() as conn:
-            conn.execute("DELETE FROM notifications WHERE listing_id='__test__'")
-        notify_gem(test_listing)
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    # Clear dedup so test always fires
+    with db_connect() as conn:
+        conn.execute("DELETE FROM notifications WHERE listing_id='__test__'")
+
+    # Run in background so request returns immediately
+    t = threading.Thread(target=notify_gem, args=(test_listing,), daemon=True)
+    t.start()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/status", methods=["GET"])
