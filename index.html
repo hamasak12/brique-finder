@@ -786,6 +786,12 @@ function renderResults(listings, title, count, bodyId, titleId, badgeId, section
     const defectBadge = defects
       ? `<span title="${esc(l.defects.join(', '))}" style="display:inline-block;background:var(--yel-bg);border:1px solid var(--yellow);border-radius:4px;color:var(--yellow);font-size:10px;font-weight:700;padding:1px 5px;margin-left:5px;vertical-align:middle">⚠️ defeito</span>`
       : "";
+    const condIcon  = l.photo_condition === "good" ? "🟢" : l.photo_condition === "fair" ? "🟡" : l.photo_condition === "poor" ? "🔴" : "";
+    const condLabel = l.photo_condition === "good" ? "bom" : l.photo_condition === "fair" ? "regular" : l.photo_condition === "poor" ? "ruim" : "";
+    const condTitle = l.photo_issues && l.photo_issues.length ? l.photo_issues.join(", ") : condLabel;
+    const photoBadge = condIcon
+      ? `<span title="${esc(condTitle)}" style="display:inline-block;border-radius:4px;font-size:10px;font-weight:700;padding:1px 5px;margin-left:5px;vertical-align:middle">${condIcon} ${condLabel}</span>`
+      : "";
     const price     = l.price || l.current_price || 0;
     const seller    = esc(l.seller_name || "—");
     const loc       = esc(l.seller_location || "—");
@@ -809,7 +815,7 @@ function renderResults(listings, title, count, bodyId, titleId, badgeId, section
       <td><div class="item-cell">
         ${thumb}${ph}
         <div>
-          <div class="item-name"><a href="${url}" target="_blank" rel="noopener">${name}</a>${defectBadge}</div>
+          <div class="item-name"><a href="${url}" target="_blank" rel="noopener">${name}</a>${defectBadge}${photoBadge}</div>
           <div class="item-sub">${esc(l.seller_location || "")}</div>
         </div>
       </div></td>

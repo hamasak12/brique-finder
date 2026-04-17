@@ -32,6 +32,7 @@ AUTH_STATE       = os.path.join(DATA_DIR, "auth_state.json")
 ADMIN_PASSWORD   = os.environ.get("FF_ADMIN_PASSWORD", "admin")
 TELEGRAM_TOKEN   = os.environ.get("FF_TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT    = os.environ.get("FF_TELEGRAM_CHAT", "")
+OLLAMA_URL       = os.environ.get("FF_OLLAMA_URL", "http://localhost:11434")
 
 
 # ── Database ───────────────────────────────────────────────────────────────────
@@ -99,6 +100,10 @@ def db_init():
                 listing_id TEXT UNIQUE,
                 sent_at    TEXT
             );
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
         """)
         # Migrations
         try:
@@ -109,6 +114,14 @@ def db_init():
             conn.execute("SELECT score FROM listings LIMIT 1")
         except Exception:
             conn.execute("ALTER TABLE listings ADD COLUMN score REAL")
+        try:
+            conn.execute("SELECT sold_at FROM listings LIMIT 1")
+        except Exception:
+            conn.execute("ALTER TABLE listings ADD COLUMN sold_at TEXT")
+        try:
+            conn.execute("SELECT photo_condition FROM listings LIMIT 1")
+        except Exception:
+            conn.execute("ALTER TABLE listings ADD COLUMN photo_condition TEXT")
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -148,6 +161,7 @@ BUYER_PREFIXES = (
     "quero comprar", "procuro ", "busco ",
     "interesse em comprar", "compra ", "troco por",
     "alguem vende", "alguém vende",
+    "vendido", "vendida",
 )
 
 DEFECT_KEYWORDS = [
@@ -223,10 +237,18 @@ def get_feedback() -> list[dict]:
 
 
 def get_query_avg(query: str) -> float | None:
-    """Return recent stored average price for a query, or None."""
+    """Return avg price for a query — prefers confirmed sold prices, falls back to historical."""
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT avg_price FROM price_history WHERE query = ? ORDER BY recorded_at DESC LIMIT 1",
+            """SELECT AVG(l.price) FROM listings l
+               JOIN searches s ON l.search_id=s.id
+               WHERE s.query=? AND l.sold_at IS NOT NULL AND l.price > 0""",
+            (query,)
+        ).fetchone()
+        if row and row[0]:
+            return row[0]
+        row = conn.execute(
+            "SELECT avg_price FROM price_history WHERE query=? ORDER BY recorded_at DESC LIMIT 1",
             (query,)
         ).fetchone()
     return row["avg_price"] if row else None
@@ -239,6 +261,75 @@ def save_query_avg(query: str, avg: float):
             "INSERT INTO price_history (query, avg_price, recorded_at) VALUES (?, ?, ?)",
             (query, avg, now)
         )
+
+
+# ── Settings helpers ──────────────────────────────────────────────────────────
+
+def get_setting(key: str, default: str = "") -> str:
+    with db_connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str):
+    with db_connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, value))
+
+
+# ── Photo Analysis (Ollama) ────────────────────────────────────────────────────
+
+def analyze_photo(photo_url: str) -> dict:
+    """Use local Ollama llama3.2-vision to assess listing photo condition."""
+    if not photo_url:
+        return {}
+    try:
+        import base64
+        img_data = urllib.request.urlopen(photo_url, timeout=8).read()
+        b64      = base64.standard_b64encode(img_data).decode()
+        payload  = json.dumps({
+            "model":  "llama3.2-vision",
+            "prompt": (
+                "Look at this product photo from a marketplace listing. "
+                "Reply in JSON only, no explanation: "
+                "{\"condition\": \"good|fair|poor\", "
+                "\"issues\": [\"list visible damage\"], "
+                "\"score_adjust\": <integer -20 to 5>}"
+            ),
+            "images": [b64],
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
+            f"{OLLAMA_URL}/api/generate", data=payload,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+        return json.loads(result["response"])
+    except Exception as e:
+        print(f"[Photo] analysis failed: {e}")
+        return {}
+
+
+# ── Sold Detection ─────────────────────────────────────────────────────────────
+
+def mark_sold_listings(query: str, current_ids: list):
+    """Mark previously seen listings that no longer appear as likely sold."""
+    if not current_ids:
+        return
+    now          = datetime.now(timezone.utc).isoformat()
+    placeholders = ",".join("?" * len(current_ids))
+    with db_connect() as conn:
+        rows = conn.execute(
+            f"""SELECT l.id FROM listings l
+                JOIN searches s ON l.search_id = s.id
+                WHERE s.query=? AND l.sold_at IS NULL AND l.id NOT IN ({placeholders})""",
+            [query] + current_ids
+        ).fetchall()
+        if rows:
+            sold_ids = [r["id"] for r in rows]
+            ph2      = ",".join("?" * len(sold_ids))
+            conn.execute(f"UPDATE listings SET sold_at=? WHERE id IN ({ph2})", [now] + sold_ids)
+            print(f"[Sold] {len(sold_ids)} listings marked sold for '{query}'")
 
 
 # ── Telegram Alerts & Bot ─────────────────────────────────────────────────────
@@ -323,6 +414,55 @@ def check_gems(enriched: list[dict]):
             notify_gem(item)
 
 
+# ── Daily Summary ─────────────────────────────────────────────────────────────
+
+def send_daily_summary():
+    """Send a 24-hour digest to Telegram."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return
+    from datetime import timedelta
+    now   = datetime.now(timezone.utc)
+    since = (now - timedelta(hours=24)).isoformat()
+    with db_connect() as conn:
+        gems = conn.execute(
+            """SELECT l.name, l.price, l.score, l.item_url
+               FROM notifications n JOIN listings l ON l.id=n.listing_id
+               WHERE n.sent_at >= ? ORDER BY l.score DESC LIMIT 5""", (since,)
+        ).fetchall()
+        scans    = conn.execute("SELECT COUNT(*) FROM searches WHERE searched_at >= ?",  (since,)).fetchone()[0]
+        new_list = conn.execute("SELECT COUNT(*) FROM listings WHERE found_at >= ?",     (since,)).fetchone()[0]
+        sold     = conn.execute("SELECT COUNT(*) FROM listings WHERE sold_at >= ?",      (since,)).fetchone()[0]
+
+    lines = [
+        f"📅 <b>Resumo diário — {now.strftime('%d/%m/%Y')}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔎 Pesquisas <b>{scans}</b>  📦 Novos <b>{new_list}</b>  💸 Vendidos <b>{sold}</b>"
+    ]
+    if gems:
+        lines.append("\n💎 <b>Gems das últimas 24h:</b>")
+        for g in gems:
+            lines.append(f"• <a href=\"{g['item_url']}\"><b>{_esc(g['name'])}</b></a>  R$ {g['price']:.2f}  Score {g['score']}")
+    else:
+        lines.append("\nNenhum gem nas últimas 24h.")
+    tg_api("sendMessage", chat_id=TELEGRAM_CHAT, parse_mode="HTML", text="\n".join(lines))
+
+
+def daily_summary_loop():
+    """Background thread: sleep until configured hour, send summary, repeat."""
+    import time
+    from datetime import timedelta
+    while True:
+        hour   = int(get_setting("summary_hour", "8"))
+        now    = datetime.now()
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        secs = (target - now).total_seconds()
+        print(f"[Summary] next at {target.strftime('%d/%m %H:%M')} (in {secs/3600:.1f}h)")
+        time.sleep(secs)
+        send_daily_summary()
+
+
 # ── Telegram Bot (Interactive HUD) ────────────────────────────────────────────
 
 _tg_offset = 0  # long-poll cursor
@@ -341,9 +481,10 @@ _HUD_KEYBOARD = {
          {"text": "📈 Threshold",  "callback_data": "threshold"}],
         [{"text": "🔑 Keywords",   "callback_data": "keywords"},
          {"text": "🔐 FB Auth",    "callback_data": "fbauth"}],
-        [{"text": "❓ Help",       "callback_data": "help"},
-         {"text": "🔄 Refresh",    "callback_data": "refresh"}],
-        [{"text": "✖ Fechar",     "callback_data": "close"}],
+        [{"text": "📅 Resumo",     "callback_data": "summary"},
+         {"text": "❓ Help",       "callback_data": "help"}],
+        [{"text": "🔄 Refresh",    "callback_data": "refresh"},
+         {"text": "✖ Fechar",     "callback_data": "close"}],
     ]
 }
 
@@ -513,6 +654,39 @@ def tg_handle_callback(query: dict):
         )
         tg_edit(chat_id, message_id, text, back=True)
 
+    elif data == "summary":
+        hour = get_setting("summary_hour", "8")
+        text = (
+            f"📅 <b>Resumo Diário</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Horário atual: <b>{hour}:00</b>\n\n"
+            f"Escolha o novo horário:"
+        )
+        keyboard = {"inline_keyboard": [
+            [{"text": "6:00",  "callback_data": "sum_6"},
+             {"text": "7:00",  "callback_data": "sum_7"},
+             {"text": "8:00",  "callback_data": "sum_8"},
+             {"text": "9:00",  "callback_data": "sum_9"}],
+            [{"text": "10:00", "callback_data": "sum_10"},
+             {"text": "12:00", "callback_data": "sum_12"},
+             {"text": "18:00", "callback_data": "sum_18"},
+             {"text": "20:00", "callback_data": "sum_20"}],
+            [{"text": "📤 Enviar agora", "callback_data": "sum_now"},
+             {"text": "◀ Menu",          "callback_data": "menu"}],
+        ]}
+        tg_api("editMessageText", chat_id=chat_id, message_id=message_id,
+               text=text, parse_mode="HTML", reply_markup=keyboard)
+
+    elif data.startswith("sum_"):
+        val = data[4:]
+        if val == "now":
+            threading.Thread(target=send_daily_summary, daemon=True).start()
+            tg_api("answerCallbackQuery", callback_query_id=query["id"], text="Enviando resumo...")
+        else:
+            set_setting("summary_hour", val)
+            tg_api("answerCallbackQuery", callback_query_id=query["id"], text=f"Horário salvo: {val}:00")
+            tg_edit(chat_id, message_id, _hud_text())
+
 
 def tg_handle_message(msg: dict):
     text    = msg.get("text", "").strip()
@@ -520,6 +694,11 @@ def tg_handle_message(msg: dict):
 
     if text.startswith("/start") or text.startswith("/menu"):
         tg_send_hud(chat_id)
+        return
+
+    if text.startswith("/summary"):
+        threading.Thread(target=send_daily_summary, daemon=True).start()
+        tg_api("sendMessage", chat_id=chat_id, text="📅 Enviando resumo...")
         return
 
     doc = msg.get("document")
@@ -711,8 +890,15 @@ def _enrich(listings: list[dict], query: str) -> tuple[list[dict], float | None]
         if defects:
             penalty = min(50.0, len(defects) * 20.0)
             score   = max(0.0, round(score - penalty, 1))
-        # avg_price uses fresh query_avg so profit always reflects current market
-        enriched.append({**listing, "score": score, "avg_price": query_avg, "defects": defects})
+        item = {**listing, "score": score, "avg_price": query_avg, "defects": defects,
+                "photo_condition": "", "photo_issues": []}
+        if score >= 75 and item.get("photo_url"):
+            analysis = analyze_photo(item["photo_url"])
+            if analysis:
+                item["score"]          = max(0.0, min(100.0, round(score + analysis.get("score_adjust", 0), 1)))
+                item["photo_condition"] = analysis.get("condition", "")
+                item["photo_issues"]    = analysis.get("issues", [])
+        enriched.append(item)
 
     enriched.sort(key=lambda x: x["score"], reverse=True)
     return enriched, query_avg
@@ -738,6 +924,7 @@ def api_search():
     if not listings:
         return jsonify({"error": "No listings found. Try a different keyword."}), 404
 
+    mark_sold_listings(query, [l["id"] for l in listings])
     enriched, avg = _enrich(listings, query)
 
     # Identify who made the search
@@ -755,8 +942,8 @@ def api_search():
         search_id = cur.lastrowid
         for item in enriched:
             conn.execute(
-                "INSERT OR REPLACE INTO listings (id, name, price, photo_url, item_url, seller_name, seller_location, search_id, found_at, score) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (item["id"], item["name"], item["price"], item.get("photo_url",""), item.get("item_url",""), item.get("seller_name",""), item.get("seller_location",""), search_id, now, item.get("score"))
+                "INSERT OR REPLACE INTO listings (id, name, price, photo_url, item_url, seller_name, seller_location, search_id, found_at, score, photo_condition) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (item["id"], item["name"], item["price"], item.get("photo_url",""), item.get("item_url",""), item.get("seller_name",""), item.get("seller_location",""), search_id, now, item.get("score"), item.get("photo_condition",""))
             )
 
     threading.Thread(target=check_gems, args=(enriched,), daemon=True).start()
@@ -804,6 +991,7 @@ def api_feed():
     for kw in keywords:
         try:
             listings = fb_search(kw)
+            mark_sold_listings(kw, [l["id"] for l in listings])
             enriched, _ = _enrich(listings, kw)
             for item in enriched:
                 item["query"] = kw
@@ -983,8 +1171,8 @@ if __name__ == "__main__":
     print(f"  Admin password: {ADMIN_PASSWORD}")
     if TELEGRAM_TOKEN and TELEGRAM_CHAT:
         print(f"  [Telegram] chat: {TELEGRAM_CHAT}")
-        bot_thread = threading.Thread(target=tg_polling_loop, daemon=True)
-        bot_thread.start()
+        threading.Thread(target=tg_polling_loop,      daemon=True).start()
+        threading.Thread(target=daily_summary_loop,   daemon=True).start()
     else:
         print(f"  [Telegram] not configured — set FF_TELEGRAM_TOKEN and FF_TELEGRAM_CHAT")
     print(f"  Brique Finder running at http://localhost:{PORT}\n")
