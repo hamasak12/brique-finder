@@ -91,7 +91,6 @@ def db_init():
                 created_at   TEXT,
                 last_used_at TEXT
             );
-        """)
             CREATE TABLE IF NOT EXISTS notifications (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 listing_id TEXT UNIQUE,
