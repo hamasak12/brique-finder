@@ -433,7 +433,7 @@ let _adminPwd = "";
 
 // ── Authenticated fetch ───────────────────────────────────────────────────────
 function apiFetch(url, options = {}) {
-  options.headers = { ...(options.headers || {}), "Authorization": `Bearer ${_apiKey}` };
+  options.headers = { ...(options.headers || {}), "Authorization": `Bearer ${_apiKey}`, "ngrok-skip-browser-warning": "1" };
   return fetch(url, options);
 }
 
@@ -482,7 +482,7 @@ async function submitKey() {
   try {
     const r = await fetch(`${API}/api/auth/validate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
       body: JSON.stringify({ key }),
     });
     const d = await r.json();
@@ -504,7 +504,7 @@ async function checkStoredKey() {
   try {
     const r = await fetch(`${API}/api/auth/validate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
       body: JSON.stringify({ key: _apiKey }),
     });
     const d = await r.json();
@@ -711,7 +711,7 @@ async function runSearch() {
   try {
     const r = await apiFetch(`${API}/api/search`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
       body: JSON.stringify({ query }),
     });
     const d = await r.json();
@@ -842,7 +842,7 @@ async function vote(listingId, v) {
     try {
       await apiFetch(`${API}/api/feedback`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
         body: JSON.stringify({ listing_id: listingId, listing_name: info.name, listing_price: info.price, vote: newVote }),
       });
     } catch {}
@@ -872,7 +872,7 @@ async function addKeyword() {
   try {
     await apiFetch(`${API}/api/feed/keywords`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
       body: JSON.stringify({ keyword: kw }),
     });
     input.value = "";
