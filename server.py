@@ -12,7 +12,6 @@ import os
 import re
 import secrets
 import sqlite3
-import subprocess
 from datetime import datetime, timezone
 from statistics import mean, stdev
 from urllib.parse import quote_plus
@@ -29,6 +28,7 @@ DB_PATH        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_ma
 AUTH_STATE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_state.json")
 ADMIN_PASSWORD   = os.environ.get("FF_ADMIN_PASSWORD", "admin")
 WHATSAPP_GROUP   = os.environ.get("FF_WHATSAPP_GROUP", "")
+WA_AUTH          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_auth.json")
 
 
 # ── Database ───────────────────────────────────────────────────────────────────
@@ -226,7 +226,7 @@ def dynamic_gem_threshold() -> float:
 
 def notify_gem(listing: dict):
     """Send a WhatsApp message for a gem listing. Skips duplicates."""
-    if not WHATSAPP_GROUP:
+    if not WHATSAPP_GROUP or not os.path.exists(WA_AUTH):
         return
 
     with db_connect() as conn:
@@ -247,10 +247,31 @@ def notify_gem(listing: dict):
     )
 
     try:
-        subprocess.run(
-            ["wacli", "send", "text", "--to", WHATSAPP_GROUP, "--message", msg],
-            timeout=15, capture_output=True, check=False
-        )
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(storage_state=WA_AUTH)
+            page = context.new_page()
+            page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
+            page.wait_for_timeout(5000)
+
+            # Search for the group by name
+            search = page.locator('div[contenteditable="true"][data-tab="3"]').first
+            search.click()
+            search.fill(WHATSAPP_GROUP)
+            page.wait_for_timeout(2000)
+
+            # Click the first matching result
+            page.locator(f'span[title="{WHATSAPP_GROUP}"]').first.click()
+            page.wait_for_timeout(1500)
+
+            # Type and send the message
+            box = page.locator('div[contenteditable="true"][data-tab="10"]').first
+            box.click()
+            box.fill(msg)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(2000)
+            browser.close()
+
         now = datetime.now(timezone.utc).isoformat()
         with db_connect() as conn:
             conn.execute(
@@ -258,8 +279,6 @@ def notify_gem(listing: dict):
                 (listing["id"], now)
             )
         print(f"[WhatsApp] gem sent: {listing['name']!r}  score={listing['score']}")
-    except FileNotFoundError:
-        print("[WhatsApp] wacli not found — install from https://github.com/steipete/wacli/releases")
     except Exception as e:
         print(f"[WhatsApp] notify failed: {e}")
 
