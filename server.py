@@ -138,6 +138,31 @@ def require_admin(f):
     return decorated
 
 
+# ── Defect Detection ──────────────────────────────────────────────────────────
+
+DEFECT_KEYWORDS = [
+    "defeito", "defeitos", "com defeito",
+    "quebrado", "quebrada",
+    "trincado", "trincada", "trinca",
+    "rachado", "rachada", "racha",
+    "não funciona", "nao funciona", "sem funcionar", "nao liga", "não liga",
+    "bateria ruim", "bateria viciada", "bateria inchada",
+    "tela trincada", "tela quebrada", "tela rachada",
+    "com problema", "com problemas", "apresenta problema",
+    "estragado", "estragada",
+    "danificado", "danificada",
+    "avariado", "avariada",
+    "para retirada", "para conserto", "para reparo",
+    "parado", "parada",
+    "travando", "travado",
+]
+
+def detect_defects(name: str) -> list[str]:
+    """Return list of defect keywords found in listing name."""
+    name_lower = name.lower()
+    return [kw for kw in DEFECT_KEYWORDS if kw in name_lower]
+
+
 # ── Scoring Algorithm ──────────────────────────────────────────────────────────
 
 def compute_score(price: float, query_avg: float, feedback: list[dict]) -> float:
@@ -421,8 +446,12 @@ def _enrich(listings: list[dict], query: str) -> tuple[list[dict], float | None]
 
     enriched = []
     for listing in listings:
-        score = compute_score(listing["price"], effective_avg, feedback)
-        enriched.append({**listing, "score": score, "avg_price": effective_avg})
+        score   = compute_score(listing["price"], effective_avg, feedback)
+        defects = detect_defects(listing.get("name", ""))
+        if defects:
+            penalty = min(50.0, len(defects) * 20.0)
+            score   = max(0.0, round(score - penalty, 1))
+        enriched.append({**listing, "score": score, "avg_price": effective_avg, "defects": defects})
 
     enriched.sort(key=lambda x: x["score"], reverse=True)
     return enriched, effective_avg
